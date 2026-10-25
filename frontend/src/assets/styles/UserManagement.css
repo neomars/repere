@@ -1,0 +1,127 @@
+.user-management {
+  padding: 2rem;
+  max-width: 800px;
+  margin: 0 auto;
+}
+
+.header-container {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  margin-bottom: 2rem;
+}
+
+.admin-section {
+  background-color: #2a2a2a;
+  padding: 1.5rem;
+  border-radius: 8px;
+  margin-bottom: 2rem;
+}
+
+.admin-section h2 {
+  margin-top: 0;
+  margin-bottom: 1.5rem;
+  font-size: 1.2rem;
+  color: #42b983;
+  border-bottom: 1px solid #444;
+  padding-bottom: 0.5rem;
+}
+
+.settings-form {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  max-width: 400px;
+}
+
+.form-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.form-group label {
+  font-size: 0.9rem;
+  color: #aaa;
+}
+
+.form-group input {
+  background-color: #1e1e1e;
+  border: 1px solid #444;
+  color: white;
+  padding: 0.6rem;
+  border-radius: 4px;
+}
+
+.button {
+  background-color: #42b983;
+  color: white;
+  border: none;
+  padding: 0.6rem 1rem;
+  border-radius: 4px;
+  cursor: pointer;
+  font-weight: bold;
+}
+
+.button:disabled {
+  opacity: 0.6;
+}
+
+.separator {
+  border: none;
+  border-top: 1px solid #444;
+  margin: 2rem 0;
+}
+
+.add-user-form {
+  display: flex;
+  gap: 1rem;
+  margin-bottom: 1.5rem;
+}
+
+.add-user-form input {
+  flex: 1;
+  background-color: #1e1e1e;
+  border: 1px solid #444;
+  color: white;
+  padding: 0.6rem;
+  border-radius: 4px;
+}
+
+.user-list {
+  list-style: none;
+  padding: 0;
+}
+
+.user-list li {
+  background-color: #333;
+  padding: 0.75rem 1rem;
+  border-radius: 4px;
+  margin-bottom: 0.5rem;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.self-badge {
+  background-color: #42b983;
+  font-size: 0.7rem;
+  padding: 2px 6px;
+  border-radius: 10px;
+  margin-left: 10px;
+}
+
+.button-delete {
+  background: #ef4444;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  padding: 0.2rem 0.5rem;
+  font-size: 1rem;
+}
+
+.button-delete:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
