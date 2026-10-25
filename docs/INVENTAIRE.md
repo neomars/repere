@@ -46,7 +46,7 @@
 | Contrôle | Avant | Après |
 |---|---|---|
 | fichiers suivis | 156 | 94 (dont `LICENSE` MIT et ce document) |
-| lignes de code³ | 31 570 | 14 823 |
+| lignes de code³ | 31 570 | 14 824 |
 | `cargo test --locked` | 216 tests | 140 tests |
 | `cargo clippy --locked --all-targets -- -D warnings` | sans avertissement | sans avertissement |
 | `npm test` (interface) | 46 tests, 7 fichiers | 15 tests, 2 fichiers ; `vite build` réussi |
@@ -433,6 +433,7 @@ Résultats sur l'arbre final, avant le premier commit :
 | `python3 -I -m unittest discover -s scripts/tts` | 10 tests verts |
 | `bash -n` sur `run` et les scripts shell, `node --check` sur `main.js`, `preload.js` et `scripts/set-version.mjs` | sans erreur |
 | parcours complet dans Chromium | 40 contrôles verts ; aucune erreur dans la console |
+| GitHub Actions (workflow *Tests*), premier envoi de la branche (`e3d48e4`) | les trois jobs verts : moteur (tests et clippy), interface et proxy, serveur de voix |
 
 Le parcours complet démarre le vrai moteur, le vrai Express et l'interface compilée, avec un faux serveur compatible OpenAI à la place de `llama-server`. Il vérifie : l'accueil, le message d'accueil du profil, une question avec la source affichée (la capture est servie par Express), les boutons de réponse rapide, le « je ne sais pas » sans source, le contenu exact des prompts envoyés au modèle (règles de support, source proposée, prénom, température), la reprise de la conversation après rechargement, la connexion, les utilisateurs, le profil d'assistant, l'écran des modèles, et les accès refusés sans session. L'assistant n'a **pas** été essayé avec un vrai modèle.
 
@@ -445,7 +446,7 @@ grep -rniE 'sexe|sexualit|intime|explicit|intensit|gémiss|onomatop|heretic|abli
 find . -path ./.git -prune -o -print | grep -niE '<les mêmes motifs>'
 ```
 
-Résultat : **aucun nom de fichier**. Dans le contenu, 11 lignes, toutes dans `package-lock.json` (racine et `backend/`), toutes le paquet npm `isexe` (« is executable », dépendance de `which`, donc de `cross-spawn`, d'electron-builder et de node-gyp) : le motif `sexe` en est une sous-chaîne. Sans `isexe`, la recherche ne renvoie rien. Pour qu'elle renvoie zéro tout court, écrire `\bsexe` ou exclure `package-lock.json`.
+Résultat : **aucun nom de fichier**. Dans le contenu, 12 lignes, toutes dans `package-lock.json` (racine et `backend/`), toutes le paquet npm `isexe` (« is executable ») : le motif `sexe` en est une sous-chaîne. Ce paquet est une dépendance de `which`, que tirent `cross-spawn` et `node-gyp` sous electron-builder (racine) et, dans `backend/`, `alasql` par sa dépendance optionnelle `react-native-fs`. Sans `isexe`, la recherche ne renvoie rien. Pour qu'elle renvoie zéro tout court, écrire `\bsexe` ou exclure `package-lock.json`.
 
 ```
 ./backend/package-lock.json:1447:        "isexe": "^2.0.0"
