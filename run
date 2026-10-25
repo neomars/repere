@@ -1,0 +1,44 @@
+#!/bin/bash
+
+# Lanceur de développement de Repère : démarre le backend, l'interface (Vite) et le moteur d'IA.
+
+# Arrête les processus enfants à la sortie
+cleanup() {
+    echo ""
+    echo "Arrêt des serveurs..."
+    # Arrête tous les processus du même groupe que ce script, donc aussi les serveurs lancés en arrière-plan
+    trap - INT TERM # évite une boucle infinie
+    kill -TERM 0 2>/dev/null
+}
+
+# SIGINT (Ctrl+C) et SIGTERM
+trap cleanup INT TERM
+
+echo "Démarrage de Repère..."
+
+# Backend
+# On le lance depuis son dossier pour que l'environnement se charge de la même façon partout
+echo "Backend sur http://localhost:3000..."
+(cd backend && exec node server.js) &
+
+# Interface
+echo "Interface sur http://localhost:5173..."
+# Vite est lancé directement par node pour éviter les problèmes de gestionnaire de paquets (corepack, import dynamique)
+(cd frontend && exec node ./node_modules/vite/bin/vite.js) &
+
+# Moteur d'IA (Rust), si cargo est disponible
+if command -v cargo >/dev/null 2>&1; then
+    echo "Moteur d'IA sur http://localhost:3001..."
+    (cd live-engine && exec cargo run --release) &
+else
+    echo "cargo introuvable : le moteur d'IA (conversation) n'est pas démarré."
+fi
+
+echo "Les serveurs démarrent."
+echo "- Backend : http://localhost:3000"
+echo "- Moteur d'IA : http://localhost:3001 (voir live-engine/README.md)"
+echo "- Interface : http://localhost:5173"
+echo "Ctrl+C pour tout arrêter."
+
+# Attend les processus en arrière-plan
+wait

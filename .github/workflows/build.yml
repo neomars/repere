@@ -1,0 +1,211 @@
+name: Build
+
+# Produit le paquet Ubuntu (.deb) complet : interface, moteur Rust, llama-server (binaire officiel CUDA, vérifié par
+# SHA-256), whisper-server (compilé pour le processeur : aucun GPU ni CUDA n'est nécessaire pour CONSTRUIRE), scripts de
+# voix. Le paquet utilisera le GPU NVIDIA de la machine qui l'installe.
+#
+# Le lancer :
+#   • release : créer le tag d'une release `v*` — dans GitHub (Releases → Draft a new release, tag créé « sur main ») ou
+#     en ligne de commande (git tag v1.1.0 && git push origin v1.1.0) → le .deb est construit puis joint à la release
+#     (créée si besoin), avec des liens permanents.
+#     ⚠ GitHub lit le workflow DANS LE COMMIT TAGUÉ : un tag posé sur un commit antérieur à ce fichier (ou à une
+#     correction du workflow) ne déclenche rien, et la release reste sans .deb. Tagger le dernier commit de main.
+#   • release qui n'a pas de .deb : onglet Actions → Build → « Run workflow » (branche main) et, dans « Tag de la
+#     release », le tag de cette release (ex. v2.0.0) : le .deb construit depuis main est ajouté à la release existante,
+#     sans toucher à son texte ni à son tag. « Code à construire » permet d'en choisir un autre (branche, tag, commit) ;
+#     le commit réellement construit est noté dans le VERSIONS.txt joint.
+#   • essai : le même « Run workflow » en laissant « Tag de la release » vide : rien n'est publié ; le .deb est
+#     téléchargeable dans les « Artifacts » de l'exécution pendant 1 jour.
+#
+# Où va le .deb : une release le reçoit DIRECTEMENT depuis le job de construction, sans passer par le stockage d'artefacts de
+# GitHub. Ce stockage est limité (de l'ordre de 0,5 à 1 Go sur un compte personnel) et un seul .deb (≈ 750 Mo) le remplit ; les
+# fichiers d'une release, eux, n'y comptent pas. Seul un essai (rien à publier) garde un artefact, 1 jour. Si une exécution
+# échoue avec « Artifact storage quota has been hit » : supprimer les anciens artefacts (Actions → l'exécution → Artifacts →
+# corbeille), attendre 6 à 12 h que GitHub actualise l'usage, relancer.
+#
+# La version vient du tag (v1.1.0 → 1.1.0), qui nomme le paquet (repere-1.1.0-amd64.deb). Un lancement manuel
+# peut en donner une ; sans elle, c'est celle du « Tag de la release », à défaut celle de package.json.
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag de la release EXISTANTE à laquelle joindre le .deb (ex. v2.0.0). Vide = simple essai, rien n'est publié."
+        required: false
+        default: ""
+      ref:
+        description: "Code à construire : branche, tag ou commit (ex. main). Vide = la branche choisie dans « Use workflow from »."
+        required: false
+        default: ""
+      version:
+        description: "Version du paquet (ex. 1.1.0). Vide = celle du tag ci-dessus, à défaut celle de package.json."
+        required: false
+        default: ""
+
+# Une seule construction à la fois pour un même tag ou une même branche (un double clic ne la lance pas deux fois).
+concurrency:
+  group: build-${{ github.ref }}-${{ inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    # Écriture : joindre le .deb à la release (étapes « Publish GitHub Release » et « Attach the package », en fin de job).
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }} # vide = le code qui a déclenché l'exécution
+          persist-credentials: false # le jeton d'écriture ne reste pas dans .git/config : seules les étapes de publication le reçoivent
+
+      # Tag et version sont vérifiés AVANT les trente minutes de construction : une faute de frappe se voit tout de suite.
+      # Les saisies passent par l'environnement, pas par le script : elles ne peuvent pas y injecter de commande.
+      - name: Work out the release tag and the version
+        id: meta
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+          INPUT_TAG: ${{ inputs.tag }}
+          INPUT_REF: ${{ inputs.ref }}
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          commit="$(git rev-parse HEAD)"
+          code="${INPUT_REF:-$REF_NAME}"
+          tag=""
+          if [ "$REF_TYPE" = tag ]; then tag="$REF_NAME"; else tag="$INPUT_TAG"; fi
+          version="$INPUT_VERSION"
+          if [ -z "$version" ] && [ -n "$tag" ]; then version="${tag#v}"; fi
+          if [ -n "$tag" ] && ! [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::Tag « $tag » invalide : attendu v1.2.3 (ou v1.2.3-beta.1)."; exit 1
+          fi
+          if [ -n "$version" ] && ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::Version « $version » invalide : attendu 1.2.3 (ou 1.2.3-beta.1)."; exit 1
+          fi
+          { echo "tag=$tag"; echo "version=$version"; echo "commit=$commit"; echo "code=$code"; } >> "$GITHUB_OUTPUT"
+          {
+            echo "### Construction du .deb"
+            echo "- Code construit : \`$commit\` ($code)"
+            echo "- Version du paquet : \`${version:-celle de package.json}\`"
+            if [ -z "$tag" ]; then echo "- Essai : rien ne sera publié (le .deb sera dans les Artifacts, pendant 1 jour)"; else echo "- Release visée : \`$tag\` (le .deb lui sera joint directement)"; fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # Lancement manuel visant une release : elle doit exister (le .deb y est AJOUTÉ). Vérifié tout de suite, pas après la
+      # construction : une release oubliée ou mal orthographiée se voit en quelques secondes.
+      - name: Check that the target release exists
+        if: steps.meta.outputs.tag != '' && github.ref_type != 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.meta.outputs.tag }}
+        run: |
+          if ! gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "::error::La release « $TAG » n'existe pas : crée-la d'abord (Releases → Draft a new release), puis relance."
+            exit 1
+          fi
+
+      # Les binaires officiels de llama.cpp exigent glibc ≥ 2.38 (Ubuntu 24.04) : le paquet ne s'installe donc que sur
+      # Ubuntu 24.04 ou plus récent.
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake git curl pkg-config ffmpeg
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2.9.2
+        with:
+          workspaces: live-engine
+
+      # Les tests passent avant l'empaquetage : un paquet cassé ne part pas en release.
+      - name: Tests (moteur Rust)
+        working-directory: live-engine
+        run: cargo test --locked
+
+      - name: Tests (proxy, dépendances du paquet)
+        run: node --test backend/liveProxy.test.js backend/packageDeps.test.js
+
+      # Après les tests : changer la version de Cargo.toml rend Cargo.lock obsolète pour `cargo test --locked`.
+      - name: Set the version
+        if: steps.meta.outputs.version != ''
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+        run: node scripts/set-version.mjs "$VERSION"
+
+      # Reconstruit tout : npm, interface, moteur (release), bin/ (llama-server, whisper-server, scripts), .deb, puis
+      # scripts/verify-package.sh (moteur et serveurs présents ; base locale, uploads et .env absents).
+      - name: Build the .deb
+        env:
+          SKIP_WHISPER: ${{ vars.SKIP_WHISPER || '' }}
+        run: bash scripts/build-linux.sh --no-doctor --deb
+
+      # Dans le VERSIONS.txt joint à la release (pas dans le paquet) : de quel commit vient ce .deb.
+      - name: Record which commit was built
+        env:
+          COMMIT: ${{ steps.meta.outputs.commit }}
+          CODE: ${{ steps.meta.outputs.code }}
+        run: |
+          echo "repere : commit $COMMIT ($CODE)" >> bin/VERSIONS.txt
+
+      - name: Show what was built
+        run: |
+          ls -lh dist/*.deb
+          cat bin/VERSIONS.txt
+          dpkg-deb -I dist/*.deb
+
+      # Release visée (tag poussé, ou « Tag de la release » saisi à la main) : le .deb est joint directement à la release, sans
+      # artefact (voir l'en-tête). Tag poussé : la release est créée (ou complétée) avec ses notes générées.
+      - name: Publish GitHub Release
+        if: steps.meta.outputs.tag != '' && github.ref_type == 'tag'
+        uses: softprops/action-gh-release@v3.0.3
+        with:
+          files: |
+            dist/*.deb
+            bin/VERSIONS.txt
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+
+      # Lancement manuel : on AJOUTE le .deb à une release qui existe déjà (texte, tag et statut « dernière version » restent
+      # tels quels).
+      - name: Attach the package to the existing release
+        if: steps.meta.outputs.tag != '' && github.ref_type != 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.meta.outputs.tag }}
+          COMMIT: ${{ steps.meta.outputs.commit }}
+          CODE: ${{ steps.meta.outputs.code }}
+        run: |
+          mapfile -t files < <(find dist -maxdepth 1 -type f -name '*.deb'; find bin -maxdepth 1 -type f -name 'VERSIONS.txt')
+          printf '%s\n' "${files[@]}" | grep -q '\.deb$' || { echo "::error::Aucun .deb à joindre."; exit 1; }
+          gh release upload "$TAG" "${files[@]}" --repo "$GITHUB_REPOSITORY" --clobber
+          {
+            echo "### .deb joint à la release \`$TAG\`"
+            printf -- '- %s\n' "${files[@]##*/}"
+            echo "- Construit depuis \`$COMMIT\` ($CODE) : voir VERSIONS.txt dans la release."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # Essai (aucune release visée) : le .deb n'a nulle part où aller, on le garde 1 jour en artefact.
+      - name: Upload the trial package
+        if: steps.meta.outputs.tag == '' && !cancelled()
+        uses: actions/upload-artifact@v4
+        with:
+          name: repere-linux
+          path: |
+            dist/*.deb
+            bin/VERSIONS.txt
+          if-no-files-found: warn
+          retention-days: 1
+          compression-level: 0 # un .deb est déjà compressé

@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# Lanceur du serveur de voix : utilise l'environnement Python isolé créé par setup-tts.sh.
+set -euo pipefail
+DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+VENV="${REPERE_TTS_VENV:-${XDG_DATA_HOME:-$HOME/.local/share}/repere/tts-venv}"
+PY="$VENV/bin/python"
+if [ "${TTS_FAKE:-0}" = "1" ] && [ ! -x "$PY" ]; then PY="python3"; fi   # tests sans GPU
+if [ ! -x "$PY" ] && [ "$PY" != "python3" ]; then
+  echo "Moteur de voix non installé : clique sur « Installer le moteur de voix » dans l'écran Modèles." >&2
+  exit 3
+fi
+# Le venv apporte ses propres bibliothèques CUDA (torch) : celles de bin/ (llama-server) ou de l'AppImage ne doivent pas s'y mêler.
+unset LD_LIBRARY_PATH
+# Le cache Hugging Face reste dans le dossier de l'app (repli de from_pretrained).
+export HF_HOME="${HF_HOME:-${XDG_DATA_HOME:-$HOME/.local/share}/repere/hf-cache}"
+# Moins de fragmentation de la mémoire GPU : la voix partage la carte avec l'IA et le micro.
+export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
+exec "$PY" "$DIR/chatterbox_server.py" "$@"
