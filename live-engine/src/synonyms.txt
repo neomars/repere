@@ -1,0 +1,91 @@
+# Dictionnaire de synonymes du jargon informatique (français et anglais).
+#
+# Une ligne = un « concept » : des mots ou expressions de MÊME SENS, séparés par des virgules. Dès qu'un de ces mots est écrit
+# (par l'utilisateur ou par l'IA), les textes de la base qui en contiennent un autre — dans leurs tags, leur titre ou leur
+# description — sont candidats. Le premier mot sert de nom au concept.
+#
+# Après un « ~ », des mots seulement LIÉS : ils ne déclenchent rien, mais classent mieux les textes qui les contiennent.
+#
+# Pour compléter ce dictionnaire sans le modifier, créez le fichier « synonyms.txt » dans le dossier de données du moteur
+# (à côté de live.db) avec le même format ; il est relu dès qu'il change. Une ligne qui commence par le nom d'un concept
+# existant s'ajoute à ce concept. Accents, majuscules et pluriels n'ont pas d'importance.
+#
+# Évitez les mots courants de la conversation (« bonjour », « merci », « problème »…) : ils rapprocheraient des textes sans
+# rapport. Les mots vides (« de », « sans », « le »…) sont ignorés : « réseau sans fil » devient « réseau fil ».
+#
+# Ce jeu de départ est volontairement court : il sera étendu avec la base de connaissances.
+
+# ── Comptes et accès ──
+mot de passe, mots de passe, mdp, password, passwd, pwd, code secret ~ compte, identifiant, connexion
+identifiant, identifiants, login, nom d'utilisateur, username ~ compte, mot de passe, connexion
+compte verrouillé, compte bloqué, compte désactivé, compte suspendu, locked account, lockout ~ mot de passe, déblocage
+authentification, authentification multifacteur, authentification à deux facteurs, double authentification, mfa, 2fa, otp, code de vérification, authenticator ~ connexion, sécurité
+réinitialisation, réinitialiser, reset, remise à zéro ~ mot de passe, compte
+déblocage, débloquer, déverrouiller, déverrouillage, unlock ~ compte, session
+session, ouverture de session, fermeture de session, déconnexion, logout ~ connexion, compte
+sso, authentification unique, single sign-on, connexion unique ~ authentification, compte
+active directory, annuaire, ldap, gpo, stratégie de groupe, domaine windows ~ compte, droits
+
+# ── Réseau et accès à distance ──
+vpn, réseau privé virtuel, client vpn, anyconnect, globalprotect, forticlient, openvpn ~ télétravail, accès distant, connexion
+accès distant, accès à distance, bureau à distance, remote desktop, rdp, prise en main à distance ~ vpn, télétravail
+wifi, wi-fi, réseau sans fil, wlan, borne wifi, point d'accès, ssid ~ réseau, connexion, signal
+réseau, network, lan, ethernet, câble réseau, prise réseau, rj45 ~ wifi, connexion
+internet, connexion internet, accès internet, web ~ réseau, proxy
+proxy, serveur proxy, proxy d'entreprise ~ internet, navigateur
+adresse ip, ip, ipv4, ipv6, dhcp, masque de sous-réseau, passerelle ~ réseau
+dns, nom de domaine, résolution de nom, nslookup ~ réseau, internet
+
+# ── Messagerie et collaboration ──
+messagerie, mail, mails, e-mail, courriel, courrier électronique, outlook, boîte mail, boîte aux lettres, webmail ~ calendrier, pièce jointe
+calendrier, agenda, invitation, planning ~ messagerie, réunion
+pièce jointe, pièces jointes, fichier joint, attachment ~ messagerie, taille
+visioconférence, visio, teams, microsoft teams, zoom, webex, google meet, réunion en ligne, appel vidéo ~ audio, caméra, partage d'écran
+audio, micro, microphone, casque, headset, haut-parleur, enceinte ~ visioconférence
+caméra, webcam, camera ~ visioconférence
+partage d'écran, partager l'écran, screen sharing ~ visioconférence
+
+# ── Poste de travail et périphériques ──
+ordinateur, pc, ordinateur portable, laptop, notebook, poste de travail, station de travail, desktop ~ poste, machine, windows
+écran, moniteur, display, double écran, second écran ~ affichage, résolution, hdmi
+clavier, keyboard ~ souris, touche, touches
+souris, mouse, trackpad, touchpad, pavé tactile ~ clavier
+imprimante, imprimer, impression, printer, multifonction, copieur ~ scanner, toner, papier
+scanner, scanneur, numériser, numérisation, scan ~ imprimante, pdf
+file d'impression, file d'attente d'impression, spooler, print queue, travail d'impression ~ imprimante
+usb, clé usb, clef usb, périphérique usb, port usb ~ ordinateur
+smartphone, téléphone mobile, téléphone portable, mobile, iphone, android, tablette ~ messagerie
+batterie, autonomie, chargeur ~ ordinateur
+bluetooth, appairage, jumelage ~ souris, casque
+
+# ── Logiciels et système ──
+windows, microsoft windows, système d'exploitation, os ~ mise à jour, ordinateur
+mise à jour, mises à jour, update, maj, upgrade, patch, correctif, windows update ~ windows, redémarrage
+installation, installer, setup, msi ~ logiciel, droits
+désinstallation, désinstaller, uninstall ~ installation, logiciel
+logiciel, application, appli, software, app ~ installation, licence
+licence, license, clé de licence, clé d'activation, activation ~ logiciel
+redémarrage, redémarrer, reboot, restart ~ ordinateur, mise à jour
+lenteur, lent, ralentissement, latence, performances ~ ordinateur, mémoire
+plantage, planter, crash, freeze, gel, figé, ne répond plus ~ logiciel, ordinateur
+écran bleu, bsod, blue screen, stop code, code d'arrêt ~ windows, plantage
+office, microsoft 365, m365, office 365, word, excel, powerpoint ~ logiciel, licence
+navigateur, browser, chrome, edge, firefox, safari ~ internet, cache
+cache, cookies, cookie, historique de navigation ~ navigateur
+certificat, certificate, ssl, tls, https, autorité de certification ~ navigateur, sécurité
+
+# ── Fichiers et données ──
+fichier, dossier, répertoire, folder ~ partage, stockage
+partage de fichiers, dossier partagé, lecteur réseau, partage réseau, sharepoint, onedrive, nas, smb ~ fichier, droits d'accès
+droits d'accès, permissions, autorisation, accès refusé, access denied, acl ~ fichier, compte
+disque, disque dur, ssd, hdd, espace disque, disque plein, stockage, quota ~ fichier, sauvegarde
+sauvegarde, sauvegarder, backup, restauration, restaurer, restore, copie de sécurité ~ fichier, disque
+pdf, acrobat, adobe reader, lecteur pdf ~ fichier, imprimante
+
+# ── Sécurité et support ──
+virus, malware, logiciel malveillant, antivirus, ransomware, rançongiciel, cheval de troie, trojan, spyware ~ sécurité, hameçonnage
+hameçonnage, phishing, mail frauduleux, courriel frauduleux, spam, pourriel, arnaque ~ messagerie, sécurité
+sécurité, sécurité informatique, cybersécurité, rssi ~ virus, mot de passe
+erreur, message d'erreur, code d'erreur, error, échec, failure ~ capture d'écran, journal
+capture d'écran, screenshot, copie d'écran ~ erreur
+ticket, incident, glpi, helpdesk, help desk, service desk, hotline, support informatique, assistance informatique ~ demande, suivi
