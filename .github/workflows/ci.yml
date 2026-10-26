@@ -1,6 +1,7 @@
 name: Tests
 
-# Vérifie chaque envoi et chaque pull request : moteur Rust (tests + clippy), interface (tests + build), proxy, serveur de voix.
+# Vérifie chaque envoi et chaque pull request : moteur Rust (tests + clippy), interface (tests + build), proxy, serveur de voix,
+# chaîne complète d'évaluation (faux modèle).
 
 on:
   push:
@@ -55,3 +56,23 @@ jobs:
         run: |
           pip install numpy
           python -m unittest discover -s scripts/tts
+
+  # Toute la chaîne sans modèle ni GPU : import du corpus d'évaluation par l'API, recherche, citation des sources, ticket (eval/README.md).
+  eval:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Outil d'évaluation
+        run: node --test eval/run.test.mjs
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2.9.2
+        with:
+          workspaces: live-engine
+      - name: Moteur
+        working-directory: live-engine
+        run: cargo build --locked
+      - name: Évaluation de la chaîne complète (faux modèle)
+        run: eval/tools/smoke.sh

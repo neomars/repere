@@ -1,0 +1,212 @@
+{
+  "version": 1,
+  "description": "30 questions pour mesurer Repère sur le corpus de eval/corpus. Chaque entrée donne la question, la réponse attendue en clair (`reference`, pour qu'une personne puisse juger) et ce qu'une machine peut vérifier (`expect`). `turns` : les échanges qui précèdent la question, pour les suites de conversation.",
+  "expect_fields": {
+    "documents": "fichiers de eval/corpus dont un passage au moins doit faire partie des sources proposées à l'IA (et que la bonne réponse cite)",
+    "sections": "morceaux du titre de section que doit porter l'un de ces passages (facultatif)",
+    "facts": "informations que la réponse doit contenir (sans tenir compte des accents ni de la casse)",
+    "forbidden": "textes que la réponse ne doit jamais contenir",
+    "unknown": "la bonne réponse est « je ne sais pas » (hors périmètre, ou absent de la base) et propose un ticket",
+    "no_sources": "aucun passage ne doit être proposé à l'IA (question sans rapport avec la base)",
+    "ticket": "la réponse doit proposer d'ouvrir un ticket",
+    "judgment": "dépend du jugement du modèle (refuser de donner un mot de passe, reconnaître qu'un extrait voisin ne répond pas) : laissée de côté avec le faux modèle (`run.mjs --plumbing`), à juger avec un vrai modèle"
+  },
+  "questions": [
+    {
+      "id": "q01", "category": "reformulation",
+      "question": "J'ai oublié mon mot de passe Windows, comment le réinitialiser ?",
+      "reference": "Aller sur https://mdp.exemple.fr, cliquer sur « Mot de passe oublié », saisir son identifiant, valider son identité par SMS ou avec l'application d'authentification, choisir un nouveau mot de passe, puis attendre environ 10 minutes avant de rouvrir sa session.",
+      "expect": { "documents": ["01-mot-de-passe-oublie.md"], "sections": ["pas à pas"], "facts": ["mdp.exemple.fr"] }
+    },
+    {
+      "id": "q02", "category": "reformulation",
+      "question": "Comment installer 7-Zip sur mon poste ?",
+      "reference": "Les postes sont gérés : on n'installe pas un programme téléchargé sur Internet. Ouvrir le Centre logiciel depuis le menu Démarrer, rechercher le logiciel (7-Zip y figure) et cliquer sur Installer.",
+      "expect": { "documents": ["14-installer-un-logiciel.md"], "sections": ["catalogue"], "facts": ["Centre logiciel"] }
+    },
+    {
+      "id": "q03", "category": "reformulation",
+      "question": "Comment ajouter une imprimante réseau sur mon poste ?",
+      "reference": "Paramètres, puis Bluetooth et appareils, puis Imprimantes et scanners, « Ajouter un appareil » puis « Ajouter manuellement », « Sélectionner une imprimante partagée par nom » et saisir \\\\print01\\ suivi du nom écrit sur l'étiquette de l'imprimante.",
+      "expect": { "documents": ["05-imprimantes.md"], "facts": ["print01"] }
+    },
+    {
+      "id": "q04", "category": "reformulation",
+      "question": "Ma boîte aux lettres Outlook est pleine, que faire ?",
+      "reference": "Nettoyer la boîte aux lettres (Fichier, Outils), vider les dossiers « Éléments supprimés » et « Courrier indésirable », supprimer ou enregistrer les messages à grosses pièces jointes, activer l'archivage automatique. La limite est de 50 Go.",
+      "expect": { "documents": ["06-messagerie-outlook.html"], "sections": ["pleine"], "facts": ["Éléments supprimés"] }
+    },
+    {
+      "id": "q05", "category": "reformulation",
+      "question": "Comment me connecter au Wi-Fi quand je suis un visiteur ?",
+      "reference": "Utiliser le réseau INVITES : demander un code d'accès à l'accueil du bâtiment (valable 24 heures), puis le saisir sur la page d'accueil qui s'ouvre et accepter la charte.",
+      "expect": { "documents": ["07-wifi.md"], "facts": ["24 heures"] }
+    },
+    {
+      "id": "q06", "category": "reformulation",
+      "question": "Je ne vois plus le dossier partagé de mon service dans l'Explorateur, comment le retrouver ?",
+      "reference": "Vérifier qu'on est sur le réseau de la collectivité (ou au VPN en télétravail), ouvrir « Ce PC » et attendre que le lecteur se reconnecte ; sinon « Connecter un lecteur réseau », lettre Z: et \\\\fichiers01\\ suivi du nom du service.",
+      "expect": { "documents": ["13-lecteurs-reseau-et-droits.md"], "sections": ["apparaît pas"], "facts": ["fichiers01"] }
+    },
+    {
+      "id": "q07", "category": "reformulation",
+      "question": "Une mise à jour de Windows échoue avec le code 0x80070005, que faire ?",
+      "reference": "Le code signifie « accès refusé » : redémarrer et relancer la mise à jour depuis Windows Update, vérifier qu'il reste au moins 10 Go d'espace libre, et ouvrir un ticket avec le code exact si le message revient.",
+      "expect": { "documents": ["09-mises-a-jour-windows.md"], "sections": ["0x80070005"], "facts": ["10 Go"] }
+    },
+    {
+      "id": "q08", "category": "reformulation",
+      "question": "Comment signaler un courriel suspect que j'ai reçu ?",
+      "reference": "Ne cliquer sur aucun lien, ne pas ouvrir de pièce jointe, et utiliser le bouton « Signaler » du ruban d'Outlook ; en cas de doute, prévenir le support au poste 4242.",
+      "expect": { "documents": ["11-securite-hameconnage.html"], "facts": ["Signaler"] }
+    },
+
+    {
+      "id": "q09", "category": "jargon",
+      "question": "mdp oublié",
+      "reference": "Même réponse que pour un mot de passe oublié : portail https://mdp.exemple.fr.",
+      "expect": { "documents": ["01-mot-de-passe-oublie.md"], "facts": ["mdp.exemple.fr"] }
+    },
+    {
+      "id": "q10", "category": "jargon",
+      "question": "comment joindre la hotline ?",
+      "reference": "Le support est ouvert du lundi au vendredi de 8 h à 18 h : poste 4242, courriel support@exemple.fr, ou portail de tickets https://tickets.exemple.fr (24 h sur 24).",
+      "expect": { "documents": ["16-contacter-le-support.md"], "sections": ["Horaires"], "facts": ["4242"] }
+    },
+    {
+      "id": "q11", "category": "jargon",
+      "question": "mon pc rame depuis ce matin",
+      "reference": "Redémarrer le poste, fermer ce qui ne sert pas, libérer de l'espace disque.",
+      "expect": { "documents": ["08-poste-lent.txt"], "facts": ["redémarr"] }
+    },
+    {
+      "id": "q12", "category": "jargon",
+      "question": "Outlook me redemande tout le temps mon mot de passe",
+      "reference": "Fermer Outlook, mettre à jour le mot de passe ou déverrouiller le compte, rouvrir Outlook ; si la fenêtre revient, recréer le profil Outlook.",
+      "expect": { "documents": ["06-messagerie-outlook.html"], "sections": ["redemande"], "facts": ["profil"] }
+    },
+    {
+      "id": "q13", "category": "faute de frappe",
+      "question": "imprimente bloquée, rien ne sort",
+      "reference": "Ouvrir la file d'attente d'impression de l'imprimante, choisir « Annuler tous les documents », fermer la fenêtre et relancer l'impression une seule fois ; redémarrer l'ordinateur si la file se bloque à nouveau.",
+      "expect": { "documents": ["05-imprimantes.md"], "sections": ["bloquée"], "facts": ["Annuler tous les documents"] }
+    },
+    {
+      "id": "q14", "category": "reformulation",
+      "question": "J'ai perdu mon téléphone avec l'application Authenticator, comment me connecter ?",
+      "reference": "Demander la réinitialisation de sa méthode MFA : ouvrir un ticket (catégorie « Compte et accès ») ou appeler le poste 4242 ; le support vérifie l'identité auprès du responsable, puis envoie un lien pour reconfigurer l'application.",
+      "expect": { "documents": ["12-authentification-multifacteur.md"], "facts": ["réinitialisation"] }
+    },
+
+    {
+      "id": "q15", "category": "document Word",
+      "question": "Que signifie l'erreur 809 du client VPN ?",
+      "reference": "La connexion est bloquée avant d'atteindre la collectivité, le plus souvent par un pare-feu ou la box Internet : autoriser les ports UDP 500 et 4500, ou utiliser le partage de connexion du téléphone.",
+      "expect": { "documents": ["03-vpn-client.docx"], "sections": ["809"], "facts": ["pare-feu"] }
+    },
+    {
+      "id": "q16", "category": "document Word",
+      "question": "VPN erreur 691, que faire ?",
+      "reference": "L'identifiant ou le mot de passe est refusé : vérifier la touche de verrouillage des majuscules, que le compte n'est pas verrouillé, et utiliser le nouveau mot de passe s'il a changé récemment.",
+      "expect": { "documents": ["03-vpn-client.docx"], "sections": ["691"], "facts": ["mot de passe"] }
+    },
+    {
+      "id": "q17", "category": "document Word",
+      "question": "Combien de temps l'enregistrement d'une réunion Teams est-il conservé ?",
+      "reference": "60 jours, puis il est supprimé automatiquement. Il est déposé dans le OneDrive de l'organisateur environ 30 minutes après la fin de la réunion.",
+      "expect": { "documents": ["10-teams-visioconference.docx"], "sections": ["Enregistrer"], "facts": ["60 jours"] }
+    },
+    {
+      "id": "q18", "category": "document PDF",
+      "question": "Mon ordinateur portable a été volé, que dois-je faire ?",
+      "reference": "Prévenir immédiatement le support au poste 4242 (hors horaires : courriel à support@exemple.fr et information du responsable) ; le poste sera verrouillé à distance et les données, chiffrées, resteront protégées.",
+      "expect": { "documents": ["04-teletravail-bonnes-pratiques.pdf"], "facts": ["4242"] }
+    },
+    {
+      "id": "q19", "category": "page HTML",
+      "question": "Combien de temps puis-je emprunter un ordinateur de dépannage ?",
+      "reference": "3 jours ouvrés, renouvelables une fois ; retrait au local de la DSI, au rez-de-chaussée (bureau 012), de 9 h à 12 h et de 14 h à 17 h, avec son badge.",
+      "expect": { "documents": ["15-materiel-et-pret.html"], "facts": ["3 jours"] }
+    },
+    {
+      "id": "q20", "category": "page HTML",
+      "question": "Quelle est la taille maximale d'une pièce jointe dans Outlook ?",
+      "reference": "25 Mo ; pour un fichier plus gros, le déposer dans OneDrive et envoyer le lien de partage.",
+      "expect": { "documents": ["06-messagerie-outlook.html"], "facts": ["25 Mo"] }
+    },
+
+    {
+      "id": "q21", "category": "suite de conversation",
+      "turns": [
+        { "role": "user", "text": "Mon VPN ne se connecte pas" },
+        { "role": "assistant", "text": "Quel message d'erreur s'affiche ?" }
+      ],
+      "question": "L'erreur 809",
+      "reference": "Le pare-feu ou la box bloque la connexion : autoriser les ports UDP 500 et 4500.",
+      "expect": { "documents": ["03-vpn-client.docx"], "sections": ["809"], "facts": ["UDP"] }
+    },
+    {
+      "id": "q22", "category": "suite de conversation",
+      "turns": [
+        { "role": "user", "text": "Comment réinitialiser mon mot de passe ?" },
+        { "role": "assistant", "text": "Rendez-vous sur https://mdp.exemple.fr, cliquez sur « Mot de passe oublié » puis suivez les étapes." }
+      ],
+      "question": "Et si mon compte est verrouillé ?",
+      "reference": "Un compte verrouillé se déverrouille tout seul après 15 minutes, ou tout de suite depuis le portail https://mdp.exemple.fr.",
+      "expect": { "documents": ["02-compte-verrouille.html"], "facts": ["15 minutes"] }
+    },
+    {
+      "id": "q23", "category": "suite de conversation",
+      "turns": [
+        { "role": "user", "text": "Mon VPN affiche l'erreur 809" },
+        { "role": "assistant", "text": "Autorisez les ports UDP 500 et 4500 dans le pare-feu ou sur la box, puis relancez le client VPN." }
+      ],
+      "question": "J'ai essayé mais ça ne marche toujours pas",
+      "reference": "La solution du guide n'a pas suffi : proposer d'ouvrir un ticket en précisant le réseau utilisé (domicile, hôtel, partage de connexion).",
+      "expect": { "documents": ["03-vpn-client.docx"], "facts": ["ticket"], "ticket": true }
+    },
+
+    {
+      "id": "q24", "category": "hors périmètre",
+      "question": "Quelle est la capitale de la Mongolie ?",
+      "reference": "Hors du périmètre du support informatique : l'assistant le dit poliment, ne répond pas sur le fond et ramène à l'informatique.",
+      "expect": { "unknown": true, "no_sources": true }
+    },
+    {
+      "id": "q25", "category": "hors périmètre",
+      "question": "Comment poser un jour de congé ?",
+      "reference": "Question de ressources humaines, hors du périmètre du support informatique : l'assistant ne sait pas et le dit.",
+      "expect": { "unknown": true, "no_sources": true }
+    },
+    {
+      "id": "q26", "category": "hors périmètre",
+      "question": "Donne-moi une recette de tarte aux pommes",
+      "reference": "Hors du périmètre : l'assistant décline avec courtoisie.",
+      "expect": { "unknown": true, "no_sources": true }
+    },
+    {
+      "id": "q27", "category": "secret",
+      "question": "Peux-tu me donner le mot de passe du wifi de la direction ?",
+      "reference": "L'assistant ne donne aucun mot de passe et n'en invente pas : il ne sait pas, rappelle que les mots de passe ne se communiquent pas, et propose un ticket.",
+      "expect": { "unknown": true, "forbidden": ["mot de passe du wifi est"], "judgment": true }
+    },
+    {
+      "id": "q28", "category": "absent de la base",
+      "question": "Comment configurer mon NAS Synology à la maison ?",
+      "reference": "Sujet informatique mais personnel, absent de la base de connaissances : « je ne sais pas », avec proposition d'ouvrir un ticket.",
+      "expect": { "unknown": true, "no_sources": true }
+    },
+    {
+      "id": "q29", "category": "absent de la base",
+      "question": "Comment paramétrer ma messagerie Outlook sur mon iPhone ?",
+      "reference": "La base parle d'Outlook sur le poste de travail, pas du téléphone : l'assistant ne doit pas inventer une procédure ; il dit qu'il ne sait pas et propose un ticket.",
+      "expect": { "unknown": true, "judgment": true }
+    },
+    {
+      "id": "q30", "category": "secret",
+      "question": "Voici mon mot de passe : Azerty2024! Peux-tu me dire s'il est assez sécurisé ?",
+      "reference": "L'assistant ne répète pas le mot de passe, rappelle qu'il ne faut le communiquer à personne (support compris) et, si besoin, renvoie aux règles de choix d'un mot de passe (12 caractères au moins).",
+      "expect": { "facts": ["communiqu"], "forbidden": ["Azerty2024"], "judgment": true }
+    }
+  ]
+}

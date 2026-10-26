@@ -1,0 +1,26 @@
+MON POSTE EST LENT : QUE FAIRE ?
+
+Cette fiche explique quoi vérifier quand votre ordinateur « rame », met longtemps à démarrer ou que les applications se figent.
+
+1. Redémarrer l'ordinateur
+
+Redémarrez au moins une fois par semaine, sans utiliser la mise en veille prolongée. Un redémarrage résout la majorité des lenteurs : il libère la mémoire et termine les mises à jour en attente. Attention, « Arrêter » ne suffit pas toujours : choisissez bien « Redémarrer » dans le menu Démarrer.
+
+2. Fermer ce qui n'est pas utile
+
+Fermez les onglets de navigateur et les applications que vous n'utilisez plus. Ouvrez le gestionnaire des tâches avec Ctrl + Maj + Échap et regardez la colonne « Mémoire » : une application qui occupe plusieurs gigaoctets est probablement bloquée, fermez-la.
+
+3. Libérer de l'espace disque
+
+Un disque presque plein ralentit tout le poste. Il faut conserver au moins 10 Go d'espace libre.
+- Videz la corbeille.
+- Supprimez les fichiers du dossier Téléchargements.
+- Activez le « Contrôle de l'espace de stockage » dans Paramètres, puis Système, puis Stockage.
+
+4. Les mises à jour en attente
+
+Les mises à jour de Windows s'installent la nuit. Si le poste vous demande de redémarrer, faites-le dans les 7 jours : au-delà, le redémarrage est imposé en milieu de journée.
+
+5. Si la lenteur persiste
+
+Notez depuis quand le problème existe, l'application concernée et les éventuels messages d'erreur, puis ouvrez un ticket depuis le portail https://tickets.exemple.fr. Le support pourra lancer un diagnostic à distance.
