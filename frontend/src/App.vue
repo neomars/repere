@@ -13,9 +13,11 @@
         <button v-if="isAuthenticated" @click="handleLogout" class="logout-link">Déconnexion ({{ currentUser?.username }})</button>
       </nav>
     </header>
-    <!-- Menu d'administration : utilisateurs et réglages de l'assistant (modèles, profils) -->
+    <!-- Menu d'administration : utilisateurs, base de connaissances, tickets et réglages de l'assistant (modèles, profils) -->
     <nav v-if="inAdmin" class="admin-nav" aria-label="Menu d'administration">
       <router-link to="/admin/users">Utilisateurs</router-link>
+      <router-link to="/admin/live/knowledge">Base de connaissances</router-link>
+      <router-link to="/admin/live/tickets">Tickets</router-link>
       <router-link to="/admin/live/models">⚙ Modèles IA</router-link>
       <router-link to="/admin/live/personas">Profils d'assistant</router-link>
     </nav>

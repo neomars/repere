@@ -13,6 +13,8 @@
     <p class="admin-links">
       Administration :
       <router-link to="/admin/users">utilisateurs</router-link> ·
+      <router-link to="/admin/live/knowledge">base de connaissances</router-link> ·
+      <router-link to="/admin/live/tickets">tickets</router-link> ·
       <router-link to="/admin/live/models">modèles</router-link> ·
       <router-link to="/admin/live/personas">profils d’assistant</router-link>
     </p>

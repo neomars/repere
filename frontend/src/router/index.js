@@ -8,6 +8,8 @@ const Live = () => import('../views/Live.vue')
 const UserManagement = () => import('../views/Admin/UserManagement.vue')
 const LivePersonas = () => import('../views/Admin/LivePersonas.vue')
 const LiveModels = () => import('../views/Admin/LiveModels.vue')
+const LiveKnowledge = () => import('../views/Admin/LiveKnowledge.vue')
+const LiveTickets = () => import('../views/Admin/LiveTickets.vue')
 
 const router = createRouter({
   history: createWebHistory(import.meta.env.BASE_URL),
@@ -21,6 +23,16 @@ const router = createRouter({
       path: '/live',
       name: 'live',
       component: Live
+    },
+    {
+      path: '/admin/live/knowledge',
+      name: 'admin-live-knowledge',
+      component: LiveKnowledge
+    },
+    {
+      path: '/admin/live/tickets',
+      name: 'admin-live-tickets',
+      component: LiveTickets
     },
     {
       path: '/admin/live/models',

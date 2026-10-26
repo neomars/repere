@@ -73,6 +73,8 @@
           <strong>{{ persona?.name }}</strong>
           <span v-if="speaking" class="pill ok">🔊 parle…</span>
           <button type="button" class="small" :aria-expanded="showSettings" @click="showSettings = !showSettings">⚙ Réglages</button>
+          <button type="button" class="small" :disabled="!connected || busy || !hasUserMessage" title="Prépare un ticket avec le résumé de cette conversation"
+                  @click="openTicket">🎫 Ouvrir un ticket</button>
           <button type="button" class="small" @click="restart">Changer</button>
           <template v-if="showSettings">
           <label class="inline"><input type="checkbox" v-model="voiceOn" @change="pushSettings" /> Voix de l'assistant
@@ -90,12 +92,17 @@
           <span v-html="render(m.text)" />
           <button v-if="m.role === 'assistant' && m.text.trim()" type="button" class="listen" :disabled="!voice.enabled"
                   title="Écouter ce message" @click="listen(m)">🔊</button>
+          <!-- Extraits de la base de connaissances sur lesquels s'appuie la réponse : un clic ouvre le passage -->
+          <div v-if="m.sources && m.sources.length" class="sources" role="group" aria-label="Sources citées">
+            <span class="sources-label">Sources :</span>
+            <button v-for="s in m.sources" :key="s.id" type="button" class="chip" :title="`${sourcePath(s)}\n${s.excerpt || ''}`" @click="viewing = s.id">📄 {{ sourceLabel(s) }}</button>
+          </div>
         </div>
       </div>
 
       <div class="foot">
         <div v-if="replies.length" class="replies">
-          <button v-for="(r, n) in replies" :key="n" type="button" :title="r" @click="sendText(r)">{{ r }}</button>
+          <button v-for="(r, n) in replies" :key="n" type="button" :title="r" @click="reply(r)">{{ r }}</button>
         </div>
 
         <form class="input" @submit.prevent="sendText(draft)">
@@ -118,6 +125,10 @@
         </p>
       </div>
     </section>
+
+    <PassageViewer v-if="viewing" :id="viewing" @close="viewing = 0" />
+    <TicketDialog v-if="ticketOpen" :draft="ticketDraft" :loading="ticketLoading" :error="ticketError" :user-name="userName.trim()"
+                  :conversation="personaId" @close="closeTicket" @saved="onTicketSaved" />
   </div>
 </template>
 
@@ -127,6 +138,9 @@ import axios from 'axios'
 import { Recorder } from '../utils/audio.js'
 import { Speaker } from '../utils/speaker.js'
 import { store } from '../utils/storage.js'
+import { addSource, isTicketReply, sourceLabel, sourcePath } from '../utils/kb.js'
+import PassageViewer from '../components/PassageViewer.vue'
+import TicketDialog from '../components/TicketDialog.vue'
 
 const personas = ref([])
 const personaId = ref('')
@@ -161,6 +175,13 @@ const conversations = ref([]) // conversations sauvegardées par le moteur (repr
 const savedConv = computed(() => conversations.value.find((c) => c.key === personaId.value && c.messages > 0))
 const showSettings = ref(false) // réglages repliés
 const userName = ref('')
+const viewing = ref(0)        // numéro de l'extrait ouvert dans la visionneuse (0 : aucun)
+const ticketLabel = ref('')   // intitulé du bouton de réponse qui ouvre un ticket (le moteur le repère dans les réponses proposées)
+const ticketOpen = ref(false)
+const ticketDraft = ref(null)
+const ticketLoading = ref(false)
+const ticketError = ref('')
+const hasUserMessage = computed(() => messages.value.some((m) => m.role === 'user'))
 
 // Ce que la source affichée représente : sa description, à défaut son titre.
 const caption = computed(() => {
@@ -240,8 +261,8 @@ function onMessage(e) {
     case 'tts_error': voiceError.value = m.message; testing.value = false; voiceNote.value = ''; break
     case 'persona': persona.value = m.persona; break
     case 'restored': // conversation sauvegardée reprise : on la réaffiche, l'assistant ne rouvre pas la conversation
-      messages.value = m.messages.map((x) => ({ role: x.role, text: x.text }))
-      replies.value = []; bubble = -1
+      messages.value = m.messages.map((x) => ({ role: x.role, text: x.text, sources: x.sources || [] }))
+      replies.value = []; ticketLabel.value = ''; bubble = -1
       if (!userName.value && m.user_name) userName.value = m.user_name
       scroll()
       break
@@ -262,14 +283,25 @@ function onMessage(e) {
       messages.value[bubble].text += m.text
       scroll()
       break
+    case 'source': // un extrait que la réponse en cours cite : il devient un lien sous sa bulle
+      if (m.gen !== currentGen || !messages.value[bubble]) break
+      messages.value[bubble].sources = addSource(messages.value[bubble].sources, m.source)
+      scroll()
+      break
     case 'media': main.value = m.item; break
-    case 'replies': replies.value = m.items; scroll(); break
+    case 'replies': replies.value = m.items; ticketLabel.value = m.ticket || ''; scroll(); break
+    case 'ticket_draft':
+      if (ticketOpen.value) { ticketDraft.value = m; ticketLoading.value = false }
+      break
     case 'speak_start': audioGen = m.gen; break // « réécouter » : l'audio qui suit appartient à cette lecture
     case 'audio': pendingAudio = m; break
     case 'done':
       if (m.gen === currentGen) { busy.value = false; dropEmptyBubble() }
       break
-    case 'error': error.value = m.message; busy.value = false; micState.value = 'idle'; dropEmptyBubble(); break
+    case 'error':
+      if (ticketLoading.value) { ticketError.value = m.message; ticketLoading.value = false; break } // l'erreur concerne le ticket, pas la conversation
+      error.value = m.message; busy.value = false; micState.value = 'idle'; dropEmptyBubble()
+      break
   }
 }
 
@@ -365,11 +397,32 @@ function sendText(text) {
   stopAudio()
   speaker.unlock()
   currentGen = audioGen = -1 // texte et son de la génération précédente ignorés jusqu'à « gen_start » de la nouvelle
-  replies.value = []; error.value = ''; micNote.value = ''
+  replies.value = []; ticketLabel.value = ''; error.value = ''; micNote.value = ''
   pushMessage('user', text)
   busy.value = true // l'assistant va répondre : une vidéo affichée entre-temps attend la fin de sa réponse
   draft.value = ''
   sendJson({ type: 'user', text })
+}
+
+/** Une réponse rapide : le bouton « Ouvrir un ticket » ouvre le formulaire, les autres sont envoyées comme si on les avait écrites. */
+function reply(text) {
+  if (isTicketReply(text, ticketLabel.value)) openTicket()
+  else sendText(text)
+}
+
+/** Demande au moteur le brouillon du ticket (résumé de la conversation, sources consultées) et ouvre le formulaire. */
+function openTicket() {
+  if (!ws || ws.readyState !== 1) { error.value = 'Connexion au moteur interrompue : réessayez dans un instant.'; return }
+  ticketOpen.value = true
+  ticketDraft.value = null; ticketError.value = ''; ticketLoading.value = true
+  sendJson({ type: 'ticket_draft' })
+}
+
+function closeTicket() { ticketOpen.value = false; ticketLoading.value = false; ticketDraft.value = null }
+
+function onTicketSaved(t) {
+  messages.value.push({ role: 'notice', text: `Ticket ${t.reference} enregistré : le support le retrouvera dans son suivi.` })
+  scroll()
 }
 
 function interrupt() { stopAudio(); currentGen = audioGen = -1; busy.value = false; sendJson({ type: 'interrupt' }) }
@@ -470,6 +523,11 @@ onBeforeUnmount(() => {
 .foot p { margin: 0; }
 .msg { max-width: 85%; padding: .55rem .85rem; border-radius: 14px; line-height: 1.4; background: rgba(30,30,30,.82); backdrop-filter: blur(6px); white-space: pre-line; }
 .msg.user { align-self: flex-end; background: rgba(60,80,140,.82); }
+.msg.notice { align-self: center; max-width: 92%; background: transparent; border: 1px dashed #3d5a47; color: #9fd8b0; font-size: .85rem; backdrop-filter: none; }
+.sources { display: flex; flex-wrap: wrap; align-items: center; gap: .35rem; margin-top: .5rem; white-space: normal; }
+.sources-label { color: #9aa3b5; font-size: .8rem; }
+.chip { max-width: 100%; padding: .2rem .65rem; font-size: .8rem; border-radius: 999px; background: rgba(74,108,247,.18); border: 1px solid rgba(74,108,247,.55); color: #cdd8ff; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chip:hover { background: rgba(74,108,247,.35); }
 .msg :deep(em) { color: #b9b9c9; }
 .msg :deep(code) { background: rgba(255,255,255,.1); padding: 0 .3rem; border-radius: 4px; }
 .replies { display: flex; flex-wrap: wrap; gap: .4rem; max-height: 6.4rem; overflow-y: auto; }
