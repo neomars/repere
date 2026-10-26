@@ -1,0 +1,43 @@
+# Configuration optionnelle : l'app fonctionne sans fichier (la VRAM est détectée au démarrage).
+# Copie ce fichier en live.toml pour modifier quelque chose. Les modèles se téléchargent et se chargent depuis
+# l'écran « Modèles » de l'app (/admin/live/models) ; l'architecture réelle est lue dans le fichier GGUF.
+
+[server]
+bind = "127.0.0.1:3001"          # garde 127.0.0.1 : l'app est locale
+# data_dir = "data"              # base SQLite, profils d'assistant, conversations, catalog.json, sélection de modèles
+# models_dir = "data/models"     # gros fichiers : mets-les sur ton disque le plus spacieux
+# bin_dir = "bin"                # llama-server, whisper-server… (sinon recherchés dans le PATH)
+# admin_token = "change-moi"     # protège l'édition si tu exposes le moteur sur un réseau
+
+[engine]
+managed = true                   # l'app lance/arrête elle-même les serveurs IA ; false = tu les gères à la main
+autoload = true                  # recharge au démarrage les derniers modèles choisis
+
+[hardware]
+vram_gb = 0                      # 0 = détectée au démarrage via nvidia-smi (recommandé)
+ram_gb = 64.0                    # mémoire vive de la machine : sert à avertir quand la part d'un modèle déchargée en RAM n'y tient pas
+vram_reserve_gb = 0.5            # marge pour l'affichage / le navigateur (la VRAM réellement libre est aussi vérifiée)
+vram_tts_gb = 4.5                # voix Chatterbox : réservée tant qu'elle est choisie, installée à jour et pas encore chargée
+vram_other_models_gb = 0.0       # réserve manuelle en plus (autre application GPU…). Le micro compte automatiquement
+                                 # (taille du modèle Whisper choisi + ~0,5 Go) sauf avec stt.use_gpu = false
+
+[llm]
+url = "http://127.0.0.1:8080"
+ctx_tokens = 16384               # plafond ; réduit automatiquement si le modèle ne tient pas en VRAM
+temperature = 0.3                # bas : l'assistant répond d'après ses sources, sans inventer ; un profil peut imposer la sienne
+# extra_args = []                # arguments ajoutés à llama-server pour tous les modèles
+
+[stt]
+enabled = true
+url = "http://127.0.0.1:8081"
+language = "fr"                  # whisper-server est en anglais par défaut : toujours préciser
+use_gpu = false                  # le micro tourne sur le processeur (libère ≈ 1 Go de VRAM)
+# threads = 4                    # par défaut : la moitié des cœurs, de 2 à 16
+
+[tts]
+enabled = true
+url = "http://127.0.0.1:8880"    # serveur de voix compatible OpenAI /v1/audio/speech (lancé par l'app : Chatterbox)
+model = "chatterbox"
+default_voice = "default"        # nom d'un échantillon de data/voices/ ; un profil d'assistant peut imposer le sien
+format = "wav"
+language = "fr"

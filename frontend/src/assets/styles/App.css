@@ -1,0 +1,119 @@
+html, body {
+  height: 100%;
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  background-color: #121212;
+  color: #e0e0e0;
+  font-family: sans-serif;
+}
+
+#app {
+  height: 100%;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 1rem 2rem;
+  background-color: #1a1a1a;
+  border-bottom: 1px solid #333;
+}
+
+.header-left {
+  display: flex;
+  align-items: center;
+  gap: 2rem;
+}
+
+.header-title {
+  text-decoration: none;
+  color: inherit;
+}
+
+h1 {
+  margin: 0;
+}
+
+nav a, nav .logout-link {
+  color: #42b983;
+  text-decoration: none;
+  margin-left: 1.5rem;
+}
+
+.logout-link {
+  background: none;
+  border: none;
+  padding: 0;
+  font-family: inherit;
+  cursor: pointer;
+  font-size: 0.9rem;
+}
+
+nav a.router-link-exact-active {
+  font-weight: bold;
+}
+
+main {
+  flex-grow: 1;
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto; /* Allow content to scroll if needed */
+}
+
+/* Accessibility utility */
+.skip-link {
+  position: absolute;
+  top: -40px;
+  left: 0;
+  background: #42b983;
+  color: white;
+  padding: 8px;
+  z-index: 2000;
+  transition: top 0.2s;
+}
+
+.skip-link:focus {
+  top: 0;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border-width: 0;
+}
+
+/* Standardized focus indicator for keyboard navigation */
+:focus-visible {
+  outline: 2px solid #42b983;
+  outline-offset: 2px;
+}
+
+/* Menu Admin (sous l'en-tête, pages /admin/*) */
+.admin-nav { display: flex; flex-wrap: wrap; gap: .4rem; padding: .5rem 2rem; background: #151515; border-bottom: 1px solid #2a2a2a; }
+.admin-nav a { padding: .35rem .9rem; border-radius: 999px; color: #ccc; text-decoration: none; font-size: .9rem; border: 1px solid transparent; }
+.admin-nav a:hover { background: #242424; }
+.admin-nav a.router-link-active { background: #4a6cf7; color: #fff; }
+
+/* Écrans étroits : l'en-tête passe sur plusieurs lignes, les chapitres défilent à l'horizontale */
+@media (max-width: 800px) {
+  header { flex-wrap: wrap; gap: .5rem 1rem; padding: .75rem 1rem; }
+  .header-left { flex-wrap: wrap; gap: .5rem 1rem; max-width: 100%; }
+  nav a, nav .logout-link { margin-left: 0; margin-right: 1rem; }
+  .admin-nav { padding: .5rem 1rem; }
+}
+
+/* Réglage « réduire les animations » du système : plus de fondus ni de rotations */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; scroll-behavior: auto !important; }
+}

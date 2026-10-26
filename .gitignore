@@ -1,0 +1,51 @@
+# Dependencies
+node_modules/
+/backend/node_modules/
+/frontend/node_modules/
+
+# db
+backend/db.json
+
+# Uploads
+/backend/uploads/
+
+# Environment variables
+.env
+
+# Build artifacts
+dist/
+out/
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+backend.log
+npm_dev.log
+
+# IDE settings
+.idea/
+.vscode/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+
+# live-engine (Rust)
+live-engine/target/
+live-engine/data/live.db*
+live-engine/models/
+
+# app Ubuntu : sidecars compilés, sources clonées, paquets
+/bin/*
+!/bin/.gitkeep
+/.build/
+/dist/
+
+# Python
+__pycache__/
+*.pyc
+
+# Fichiers de session et de journaux locaux
+cookies.txt
+run_output.log

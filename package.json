@@ -1,0 +1,126 @@
+{
+  "name": "repere",
+  "version": "1.0.0",
+  "description": "Repère — assistant de support informatique de premier niveau (niveau 0) pour une DSI",
+  "productName": "Repère",
+  "author": {
+    "name": "Martial Limousin",
+    "email": "martial.limousin@gmail.com"
+  },
+  "homepage": "https://github.com/neomars/repere",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "build:linux": "electron-builder --linux --publish never",
+    "build:win": "electron-builder --windows",
+    "build:frontend": "npm --prefix frontend run build",
+    "build:engine": "cargo build --release --manifest-path live-engine/Cargo.toml",
+    "build:sidecars": "bash scripts/build-sidecars.sh",
+    "dist:linux": "bash scripts/build-linux.sh",
+    "doctor": "bash scripts/doctor.sh",
+    "pack:linux": "bash scripts/build-linux.sh --dir"
+  },
+  "build": {
+    "appId": "com.repere.app",
+    "productName": "Repère",
+    "executableName": "repere",
+    "artifactName": "repere-${version}-${arch}.${ext}",
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "package.json",
+      "backend/**/*",
+      "!backend/node_modules{,/**}",
+      "!backend/uploads{,/**}",
+      "!backend/db.json",
+      "!backend/.env*",
+      "!backend/*.py",
+      "!backend/*.test.js",
+      "!backend/*lock*",
+      "frontend/dist/**/*",
+      "!node_modules/bcrypt/prebuilds/win32-*{,/**}",
+      "!node_modules/bcrypt/prebuilds/darwin-*{,/**}"
+    ],
+    "extraResources": [
+      {
+        "from": "live-engine/target/release/live-engine",
+        "to": "engine/live-engine"
+      },
+      {
+        "from": "bin",
+        "to": "bin",
+        "filter": [
+          "**/*",
+          "!.gitkeep"
+        ]
+      }
+    ],
+    "asarUnpack": [
+      "node_modules/ffmpeg-static/**"
+    ],
+    "linux": {
+      "target": [
+        {
+          "target": "AppImage",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "deb",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "category": "Utility",
+      "maintainer": "Martial Limousin <martial.limousin@gmail.com>",
+      "synopsis": "Assistant de support informatique de premier niveau",
+      "description": "Assistant de support informatique de niveau 0 : répond d'après la base de connaissances de la DSI et propose d'ouvrir un ticket. IA locale (texte, voix) sur GPU NVIDIA.",
+      "syncDesktopName": true
+    },
+    "deb": {
+      "depends": [
+        "libgtk-3-0",
+        "libnotify4",
+        "libnss3",
+        "libxss1",
+        "libxtst6",
+        "xdg-utils",
+        "libatspi2.0-0",
+        "libuuid1",
+        "libsecret-1-0",
+        "libgomp1",
+        "libssl3 | libssl3t64"
+      ]
+    },
+    "win": {
+      "target": "nsis"
+    },
+    "npmRebuild": false,
+    "publish": null,
+    "toolsets": {
+      "appimage": "1.0.3"
+    }
+  },
+  "devDependencies": {
+    "electron": "^33.2.0",
+    "electron-builder": "26.15.3"
+  },
+  "dependencies": {
+    "alasql": "^4.17.3",
+    "bcrypt": "^6.0.0",
+    "compression": "^1.8.1",
+    "cors": "^2.8.6",
+    "express": "^4.21.2",
+    "express-rate-limit": "^8.2.1",
+    "express-session": "^1.19.0",
+    "ffmpeg-static": "^5.3.0",
+    "helmet": "^8.1.0"
+  },
+  "desktopName": "repere.desktop"
+}

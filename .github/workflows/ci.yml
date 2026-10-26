@@ -1,0 +1,78 @@
+name: Tests
+
+# Vérifie chaque envoi et chaque pull request : moteur Rust (tests + clippy), interface (tests + build), proxy, serveur de voix,
+# chaîne complète d'évaluation (faux modèle).
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  engine:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: ffmpeg (test des miniatures de l'import massif)
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2.9.2
+        with:
+          workspaces: live-engine
+      - name: Tests
+        working-directory: live-engine
+        run: cargo test --locked
+      - name: Clippy
+        working-directory: live-engine
+        run: cargo clippy --locked --all-targets -- -D warnings
+
+  web:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Interface
+        working-directory: frontend
+        run: |
+          npm install --no-audit --no-fund
+          npm test
+          npm run build
+      # Dépendances du paquet : une dépendance ajoutée au seul backend/package.json manque dans l'app installée, qui ne démarre plus.
+      - name: Proxy et dépendances du paquet
+        run: node --test backend/liveProxy.test.js backend/packageDeps.test.js
+
+  voice:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Serveur de voix (faux modèle, sans GPU)
+        run: |
+          pip install numpy
+          python -m unittest discover -s scripts/tts
+
+  # Toute la chaîne sans modèle ni GPU : import du corpus d'évaluation par l'API, recherche, citation des sources, ticket (eval/README.md).
+  eval:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Outil d'évaluation
+        run: node --test eval/run.test.mjs
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2.9.2
+        with:
+          workspaces: live-engine
+      - name: Moteur
+        working-directory: live-engine
+        run: cargo build --locked
+      - name: Évaluation de la chaîne complète (faux modèle)
+        run: eval/tools/smoke.sh
