@@ -11,14 +11,17 @@ Application de bureau pour Ubuntu (Electron), avec un moteur d'IA en Rust, un se
 
 | Phase | Contenu | État |
 |---|---|---|
-| **1. Socle** | Conversation en direct (texte, micro, voix), règles de support, profil d'assistant, gestion des modèles, administration | **fait** (ce dépôt) |
-| 2. Base de connaissances | Import de documents (Markdown, HTML, PDF, DOCX), découpage en passages, recherche, citation des sources (`[[source: #id]]`), ticket prérempli, jeu d'évaluation de 30 questions | à faire |
+| **1. Socle** | Conversation en direct (texte, micro, voix), règles de support, profil d'assistant, gestion des modèles, administration | **fait** |
+| **2. Base de connaissances** | Import de documents (Markdown, HTML, PDF, DOCX, texte), découpage en passages, recherche avec dictionnaire de synonymes, citation des sources (`[[source: #id]]`), « je ne sais pas » + ticket prérempli, jeu d'évaluation de 30 questions | **fait** (MVP, ce dépôt) |
 | 3. Déploiement | Connexion unique (OIDC), conversations par utilisateur, PostgreSQL, déploiement sur serveur, GLPI, Teams | à faire |
 
 Ce que la phase 1 ne fait pas encore, et qu'il faut savoir :
 
-- **Il n'y a pas encore de base de connaissances de documents.** L'assistant s'appuie sur les images décrites que le moteur sait
-  importer et analyser (captures d'écran, schémas) ; sans source pertinente, il répond qu'il ne sait pas et propose un ticket.
+- **Le ticket est enregistré dans l'application, pas dans un outil de suivi** : aucun lien avec GLPI ni Teams avant la phase 3. Le
+  support lit les tickets dans *Administration → Tickets*.
+- **La qualité des réponses d'un vrai modèle n'est pas mesurée par les tests** : le jeu d'évaluation ([`eval/`](eval/README.md))
+  mesure la recherche des passages et la chaîne complète avec un faux modèle ; `eval/run.mjs` le pose à un moteur démarré avec un
+  vrai modèle.
 - **Aucun modèle de texte n'est livré dans le catalogue** : un modèle s'ajoute par `catalog.json` (voir
   [`live-engine/README.md`](live-engine/README.md#ajouter-un-modèle-de-texte)). Sans modèle de texte chargé, l'assistant ne répond pas.
 - La sécurité est celle d'un poste de travail local (voir [Sécurité](#sécurité--état-actuel)).
@@ -40,7 +43,7 @@ Electron (application Ubuntu)
 | Interface | Vue 3 + Vite |
 | Serveur web | Node.js + Express (sessions, utilisateurs) |
 | Données du serveur web | fichier JSON (`db.json`, alasql) : une base PostgreSQL le remplacera en phase 3 |
-| Moteur d'IA | Rust (axum, tokio, SQLite pour la base de médias) |
+| Moteur d'IA | Rust (axum, tokio, SQLite pour la base de connaissances et les tickets) |
 | Inférence | llama.cpp (texte), whisper.cpp (reconnaissance vocale), Chatterbox (voix) |
 | Paquet | Electron + electron-builder (`.deb`, AppImage) |
 
@@ -96,6 +99,24 @@ Notes :
 - **Licences du paquet** : il embarque les bibliothèques CUDA de NVIDIA (`libcudart`, `libcublas`, `libcublasLt`) livrées avec le
   binaire llama.cpp officiel, et `ffmpeg-static` (GPL-3.0-or-later). Vérifiez ces licences avec la DSI avant toute diffusion.
 
+### Base de connaissances
+
+L'assistant ne répond qu'à partir des documents importés. *Administration → Base de connaissances* permet de :
+
+- **envoyer des fichiers ou un dossier** (Markdown, HTML, Word `.docx`, PDF avec texte, texte brut ; 50 Mo au plus par fichier), ou
+  **importer un dossier** de la machine du moteur (avec ses sous-dossiers, des étiquettes tirées des noms de dossiers et l'adresse de
+  base sur l'intranet : chaque source citée renvoie alors à la page d'origine) ;
+- voir les **passages** de chaque document, télécharger le fichier d'origine, supprimer un document ; réimporter un fichier modifié le
+  remplace ;
+- **essayer une question** : les passages que l'assistant recevrait, dans l'ordre, et le jargon reconnu ;
+- compléter le **dictionnaire de synonymes** (« mdp » = « mot de passe », « visio » = « Teams »…) avec le vocabulaire de la DSI.
+
+À chaque message, le moteur propose à l'IA quelques passages ; elle ne peut citer que ceux-là (`[[source: #id]]`), et l'utilisateur
+les ouvre d'un clic sous la réponse. Quand aucun passage ne convient, l'assistant le dit et propose *Ouvrir un ticket* ou *Reformuler* ;
+le ticket est prérempli avec le résumé de la conversation et les sources consultées. Les mots de passe repérés dans un document sont
+signalés à l'import, masqués dans ce que reçoit l'IA et dans les passages affichés, et le fichier d'origine d'un tel document n'est pas
+proposé au téléchargement.
+
 ### Première utilisation
 
 1. Ouvrez Repère. L'utilisateur `admin` / `admin` est créé au premier lancement : **changez le mot de passe** dans
@@ -103,7 +124,8 @@ Notes :
 2. *Administration → ⚙ Modèles IA* : téléchargez et chargez un modèle de texte (à ajouter d'abord au catalogue, voir plus haut), le
    micro (Whisper) et la voix (*Installer le moteur de voix*, puis Chatterbox). Les téléchargements reprennent après une coupure et sont
    vérifiés par SHA-256. Un profil d'assistant « Repère » est créé au premier lancement ; modifiez-le dans *Profils d'assistant*.
-3. *Assistant* : choisissez le profil, cliquez sur *Commencer*, écrivez ou parlez.
+3. *Administration → Base de connaissances* : importez vos documents.
+4. *Assistant* : choisissez le profil, cliquez sur *Commencer*, écrivez ou parlez.
 
 Si l'IA semble très lente, l'écran Modèles affiche « Ce serveur ne semble pas utiliser le GPU » : `llama-server` tourne alors sur le
 processeur (pilote ou bibliothèques CUDA manquants).
@@ -146,11 +168,14 @@ L'application Electron en développement : `npm run build:engine && npm start`.
 (cd live-engine && cargo test --locked && cargo clippy --locked --all-targets -- -D warnings)   # moteur
 (cd frontend && npm test && npm run build)                                                      # interface
 node --test backend/liveProxy.test.js backend/packageDeps.test.js                               # proxy, dépendances du paquet
+node --test eval/run.test.mjs && (cd live-engine && cargo build --locked) && eval/tools/smoke.sh # évaluation : outil, puis chaîne complète sans modèle
 python3 -m unittest discover -s scripts/tts                                                     # serveur de voix (sans GPU)
 ```
 
 GitHub Actions les lance à chaque envoi et chaque pull request (`.github/workflows/ci.yml`). Aucun test ne charge de vrai modèle :
-le moteur est testé contre de faux serveurs (modèle de texte, téléchargement Hugging Face, serveur de voix).
+le moteur est testé contre de faux serveurs (modèle de texte, téléchargement Hugging Face, serveur de voix). Le test `cargo test eval`
+importe le corpus de `eval/` et vérifie que la recherche propose le bon document pour 23 questions et rien pour les questions sans
+rapport avec la base.
 
 ### Organisation du dépôt
 
@@ -158,6 +183,7 @@ le moteur est testé contre de faux serveurs (modèle de texte, téléchargement
 |---|---|
 | `live-engine/` | moteur d'IA (Rust) : conversation, sources, voix, modèles, API |
 | `backend/` | serveur Express : session, utilisateurs, proxy du moteur |
+| `eval/` | jeu d'évaluation : corpus de 16 documents, 30 questions avec réponses attendues, outils ([`eval/README.md`](eval/README.md)) |
 | `frontend/` | interface Vue 3 |
 | `scripts/` | construction du paquet (`build-linux.sh`, `build-sidecars.sh`), diagnostic, serveur de voix (`tts/`) |
 | `docs/INVENTAIRE.md` | inventaire de la reprise du code d'origine : ce qui a été supprimé, adapté ou gardé, et pourquoi |
@@ -169,8 +195,10 @@ Repère est pour l'instant **une application locale** : le serveur n'écoute que
 pas être exposé sur un réseau en l'état. À traiter avant tout déploiement (phase 3) :
 
 - le compte `admin` / `admin` est créé au premier lancement, et la fenêtre de connexion l'affiche ;
-- les routes en lecture du moteur (profils, conversations, modèles) et le WebSocket de conversation ne demandent pas de connexion ;
-  seules les écritures passent par la session ;
+- les routes en lecture du moteur (profils, conversations, modèles, passages de la base) et le WebSocket de conversation ne demandent
+  pas de connexion ; seules les écritures passent par la session. Exception voulue : **n'importe qui peut ouvrir un ticket** (c'est
+  le but), alors que la liste des tickets est réservée à l'administration ;
+- les documents importés sont lisibles par tous ceux qui parlent à l'assistant : n'importez rien qui ne doive pas l'être ;
 - il n'y a qu'un rôle (administrateur) et une seule conversation sauvegardée par profil, partagée par tous les utilisateurs du poste.
 
 ## Licence

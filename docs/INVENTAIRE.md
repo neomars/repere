@@ -1,6 +1,6 @@
 # Inventaire : de Virtual Story à Repère
 
-> **Statut : phase 1 appliquée.** Cet inventaire a été validé (D1 : supprimer ; D3 : option B ; D2 et D4 à D8 : recommandations suivies), puis exécuté. Il garde la trace de la reprise : ce qui est parti, ce qui a été réécrit, ce qui est resté, et pourquoi. Les tableaux du §4 sont le plan validé ; les écarts constatés à l'exécution sont au §4 bis ; les mesures sont au §0 et au §6.
+> **Statut : phase 1 appliquée ; phase 2 (MVP) faite : voir le §8.** Cet inventaire a été validé (D1 : supprimer ; D3 : option B ; D2 et D4 à D8 : recommandations suivies), puis exécuté. Il garde la trace de la reprise : ce qui est parti, ce qui a été réécrit, ce qui est resté, et pourquoi. Les tableaux du §4 sont le plan validé ; les écarts constatés à l'exécution sont au §4 bis ; les mesures sont au §0 et au §6.
 > Le code d'origine est celui de `virtual-story` (dépôt privé, branche `claude/gracious-rubin-yftbq5`, 156 fichiers suivis). Il a été copié sans `.git` et hors `LICENSE` : Repère garde sa licence MIT et ne reprend aucun historique.
 > **Ce fichier est le seul du dépôt qui cite encore l'ancien nom et le vocabulaire de l'ancien projet : c'est son objet.** La recherche finale de la phase 1 l'exclut (§6).
 
@@ -479,3 +479,49 @@ Elle ne renvoie rien dans les sources du projet. Avec le motif `érot` du premie
 - **Température** (traité) : 0,3 par défaut, dans la configuration et dans le profil « Repère », pour limiter l'invention.
 - **Réserve de VRAM** (traité) : `hardware.vram_other_models_gb` vaut 0 par défaut (le micro et la voix sont comptés à part) ; le modèle et son contexte gagnent environ 4 Go sur une carte de 12 Go.
 - **Réutilisé plus tard** : `autosave.js` et `mediaRows.js` restent sans écran jusqu'à la base de connaissances. `MediaLibrary` et `MediaItem` gardent leurs noms et leurs types `video` / `photo` jusqu'à la bascule vers documents et passages. `files.rs` et `webp.rs` sortiront avec l'import de médias. Le thésaurus attend d'être branché dans `relevant()` (phase 2).
+
+## 8. Résultat de la phase 2 (base de connaissances)
+
+La médiathèque est devenue une base de connaissances : `MediaLibrary` → `KnowledgeBase` (`kb.rs`), `MediaItem` → `Source`. **Un passage de document est une
+ligne de la table `media`** (`kind = 'passage'`), à côté des images : les deux partagent la numérotation `#id` et les gardes-fous de `[[show: #id]]`
+et `[[source: #id]]`. Les routes et les noms `MediaPatch` / `MediaFilter` des images n'ont pas changé.
+
+| Demande | Réalisé |
+|---|---|
+| Import de documents (Markdown, HTML, PDF, DOCX) découpés en passages | `extract/` (+ texte brut), `ingest.rs` : envoi de fichiers ou de dossiers depuis l'interface, import d'un dossier du moteur avec progression, fichier inchangé non relu, doublons signalés |
+| Recherche réutilisant `terms.rs` et `relevant` | `KnowledgeBase::relevant` interroge `search.rs` (BM25 sur les racines de `terms.rs`, nombres et codes d'erreur compris) ; seuil de pertinence : une question sans mot de la base ne ramène rien |
+| Dictionnaire de synonymes du jargon | `thesaurus.rs` branché dans la recherche (il attendait depuis la phase 1) ; `synonyms.txt` de base enrichi (vol, perte…) ; écran d'édition avec remarques sur les lignes douteuses |
+| Quelques passages proposés à chaque tour, citation `[[source: #id]]` en liens cliquables | `Directive::Source`, même garde-fou que `ShowId` (`allowed_pick`) ; liens sous la réponse, visionneuse du passage avec passages voisins et lien vers le document d'origine ; citations conservées avec la conversation |
+| Sans source pertinente : le dire, `[[replies: Ouvrir un ticket \| Reformuler]]` | règle du prompt, et filet du moteur : une réponse qui dit « je ne sais pas » sans boutons reçoit ceux-là |
+| Ticket prérempli avec le résumé (`compact()`) | `ticket_draft` : même résumeur que `compact`, titre, demandeur, sources consultées ; formulaire à relire, copie, enregistrement local (`tickets.db`), écran *Administration → Tickets* |
+| Jeu d'évaluation `eval/` de 30 questions | corpus de 16 documents, 30 questions avec réponses attendues, test de recherche dans `cargo test`, chaîne complète avec faux modèle dans la CI, `run.mjs` pour un vrai modèle |
+
+**Écarts et choix à connaître**
+
+1. **Un test de bout en bout a trouvé un défaut de la recherche** : le message d'accueil de l'assistant (« support informatique… décrivez votre problème ») servait de contexte et ramenait des
+   extraits pour n'importe quelle question. La recherche n'utilise plus que les messages de l'utilisateur.
+2. **Mots de passe dans les documents** : détectés à l'import (`secrets.rs`), masqués partout où l'IA ou l'utilisateur voit le texte, et le fichier d'origine d'un tel document n'est plus téléchargeable.
+   Ce n'était pas demandé ; une base de connaissances en contient forcément.
+3. **Création de ticket ouverte à tous** : `liveProxy.js` laisse passer `POST /api/live/tickets` sans connexion (le but est qu'un utilisateur signale son problème) ; la liste et le suivi exigent la connexion, y compris en lecture,
+   quelle que soit l'écriture de l'adresse (casse, `//`, `%74`). Aucune limite de débit : à traiter avec la sécurité de la phase 3.
+4. **Pas d'outil de suivi branché** : le ticket reste dans l'application (`TicketStore::create` est le point d'entrée prévu pour GLPI ou Teams, phase 3).
+5. **Le jeu d'évaluation n'a pas été passé avec un vrai modèle** (aucun modèle de texte au catalogue, Hugging Face injoignable depuis l'environnement de reprise). Le test de recherche donne 23 questions sur 23
+   avec le bon document proposé, un rang moyen inverse de 0,98, et aucun passage pour les 4 questions sans rapport ; la chaîne complète passe 27 contrôles sur 27 avec un faux modèle qui recopie les passages. Ces chiffres
+   disent que les pièces s'emboîtent, pas que les réponses d'un modèle seront bonnes. Le corpus est fictif.
+6. **Limites de la recherche** : pas de recherche par le sens, pas de correction des fautes de frappe ; une question d'un autre sujet posée au milieu d'une conversation peut ramener les extraits du sujet précédent
+   (le prompt demande alors à l'IA de dire qu'elle ne sait pas) ; une heuristique « changement de sujet » a été essayée puis abandonnée, car elle coupait les questions de suite qui emploient un mot inconnu de la base.
+7. **PDF scannés** : refusés (pas de texte à lire) ; il faudrait un OCR.
+8. **Images** : le moteur sait toujours les importer, les décrire et les citer (`[[show: #id]]`), mais il n'y a pas d'écran d'administration pour elles ; `autosave.js` et `mediaRows.js` attendent toujours cet écran.
+9. **Interface** : nouveaux écrans *Base de connaissances* (envoi, import de dossier, essai de recherche, documents et passages, synonymes) et *Tickets* ; sources cliquables, visionneuse et formulaire de ticket dans la conversation.
+
+**Mesures de fin de phase 2**
+
+| Contrôle | Résultat |
+|---|---|
+| `cargo test --locked` | 220 tests verts (dont l'évaluation de la recherche) |
+| `cargo clippy --locked --all-targets -- -D warnings` | sans avertissement |
+| `npm test` (interface) | 29 tests verts dans 3 fichiers |
+| `node --test backend/liveProxy.test.js backend/packageDeps.test.js` | 8 tests verts |
+| `node --test eval/run.test.mjs` | 13 tests verts |
+| `eval/tools/smoke.sh` (moteur réel + faux modèle) | 27 questions sur 27 ; 3 laissées au jugement d'un modèle |
+| Parcours dans Chromium (administration, envoi du corpus, visionneuse, conversation, ticket, accès) avec le faux modèle | 62 vérifications vertes, console du navigateur sans erreur |
