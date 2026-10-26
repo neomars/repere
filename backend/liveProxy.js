@@ -24,12 +24,37 @@ function proxyHttp(req, res) {
 
 const READ_ONLY = new Set(['GET', 'HEAD', 'OPTIONS']);
 
+// Chemin « canonique » d'une URL du moteur (sans paramètres, sans doublons de « / », en minuscules, percent-décodé) : les règles
+// ci-dessous portent dessus, pas sur le texte brut, pour qu'une variante d'écriture ne contourne pas la connexion.
+// `null` si l'URL est mal formée (l'appelant refuse alors l'accès).
+function canonicalPath(url = '') {
+  try {
+    const path = decodeURIComponent(String(url).split(/[?#]/)[0]).toLowerCase();
+    return path.replace(/\/{2,}/g, '/').replace(/\/$/, '');
+  } catch {
+    return null;
+  }
+}
+
+const TICKETS = '/api/live/tickets';
+
+// Faut-il être connecté pour cette requête ? Lecture ouverte (profils d'assistant, état, passages cités…) ; toute écriture
+// (télécharger/supprimer un modèle, charger l'IA, importer des documents, éditer profils) exige la même connexion que
+// l'administration. Deux exceptions pour les tickets : n'importe quel agent peut en demander un depuis la conversation (POST),
+// mais leur liste et leur suivi contiennent des résumés d'échanges et restent à l'administration, même en lecture.
+function needsLogin(method, url = '') {
+  const path = canonicalPath(url);
+  if (path === null) return true;
+  if (path === TICKETS) return method !== 'POST';
+  if (path.startsWith(`${TICKETS}/`)) return true;
+  return !READ_ONLY.has(method);
+}
+
 // Middleware Express : à placer APRÈS la session et AVANT express.json() (le corps doit rester un flux).
-// Lecture (profils d'assistant, état…) ouverte ; toute écriture (télécharger/supprimer un modèle,
-// charger l'IA, éditer médias et profils) exige la même connexion que l'administration.
 function middleware(req, res, next) {
-  if (!isLive(req.originalUrl || req.url)) return next();
-  if (!READ_ONLY.has(req.method) && !(req.session && req.session.userId)) {
+  const url = req.originalUrl || req.url;
+  if (!isLive(url)) return next();
+  if (needsLogin(req.method, url) && !(req.session && req.session.userId)) {
     return res.status(401).send({ message: 'Non autorisé. Veuillez vous connecter.' });
   }
   proxyHttp(req, res);
@@ -67,4 +92,4 @@ function upgrade(req, socket, head) {
   return true;
 }
 
-module.exports = { middleware, upgrade, isLive, isWsUpgrade };
+module.exports = { middleware, upgrade, isLive, isWsUpgrade, needsLogin };
