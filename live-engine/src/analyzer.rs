@@ -7,7 +7,7 @@
 
 use crate::config::LlmConfig;
 use crate::engine::Engine;
-use crate::media::{Analysis, MediaItem};
+use crate::kb::{Analysis, Source};
 use crate::models::Kind;
 use crate::state::AppState;
 use serde::{Deserialize, Serialize};
@@ -104,7 +104,7 @@ impl Analyzer {
             return Err(info.reason.unwrap_or_else(|| "aucun modèle de vision n'est chargé".into()));
         }
         let items = app
-            .media
+            .kb
             .to_analyze(&opts.scope, &opts.ids, Some("photo"), opts.limit)
             .map_err(|e| format!("médiathèque illisible : {e}"))?;
         {
@@ -411,7 +411,7 @@ pub fn media_path(uploads: &Path, url: &str) -> Option<PathBuf> {
     p.is_file().then_some(p)
 }
 
-async fn run(app: Arc<AppState>, items: Vec<MediaItem>, opts: AnalyzeOptions, info: VisionInfo, status: Arc<Mutex<AnalyzeStatus>>, cancel: Arc<AtomicBool>, started: Instant) {
+async fn run(app: Arc<AppState>, items: Vec<Source>, opts: AnalyzeOptions, info: VisionInfo, status: Arc<Mutex<AnalyzeStatus>>, cancel: Arc<AtomicBool>, started: Instant) {
     let vlm = Vlm::new(&app.cfg.llm);
     let ff = crate::importer::ffmpeg_path();
     let ctx = Ctx { vlm: &vlm, ff: ff.as_deref(), cancel: &cancel };
@@ -434,7 +434,7 @@ async fn run(app: Arc<AppState>, items: Vec<MediaItem>, opts: AnalyzeOptions, in
         match res {
             Ok(a) => {
                 broken_run = 0;
-                let saved = app.media.apply_analysis(item.id, &a, &info.model, opts.overwrite);
+                let saved = app.kb.apply_analysis(item.id, &a, &info.model, opts.overwrite);
                 let mut st = status.lock().unwrap();
                 st.done += 1;
                 match saved {

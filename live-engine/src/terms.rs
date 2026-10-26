@@ -53,9 +53,45 @@ const STOP: &[&str] = &[
 /// « wi » et « fi » restent pour que « Wi-Fi » (replié en deux mots) ne disparaisse pas.
 const SHORT_TECH: &[&str] = &["pc", "ip", "os", "ad", "wi", "fi"];
 
+/// Mots courants de la langue ou des intitulés de documents (« donner », « jour », « configurer », « informatique »…) : utiles
+/// avec d'autres pour rapprocher deux textes, mais qui ne désignent jamais un sujet à eux seuls. Une question dont le seul mot
+/// connu de la base est l'un d'eux (« Comment poser un jour de congé ? », « Donne-moi une recette ») ne ramène rien. Un mot que le
+/// dictionnaire de synonymes connaît (« redémarrer », « installer ») appartient au domaine : il n'est pas concerné.
+const GENERIC: &[&str] = &[
+    // politesse et formules
+    "bonjour", "bonsoir", "salut", "merci", "svp", "stp", "cordialement", "madame", "monsieur", "desole", "pardon", "excusez",
+    // verbes d'action courants
+    "donner", "mettre", "prendre", "utiliser", "configurer", "parametrer", "regler", "changer", "modifier", "ouvrir", "fermer",
+    "lancer", "trouver", "chercher", "essayer", "tester", "verifier", "savoir", "vouloir", "aller", "venir", "arriver", "marcher",
+    "fonctionner", "demander", "expliquer", "aider", "comprendre", "voir", "regarder", "poser", "rester", "devoir", "permettre",
+    "servir", "rendre", "garder", "commencer", "continuer", "terminer", "recevoir", "ajouter", "enlever", "retirer", "choisir",
+    "indiquer", "preciser", "contacter", "appeler", "joindre", "signaler", "afficher", "apparaitre", "demarrer",
+    // noms courants
+    "jour", "temps", "fois", "chose", "cas", "facon", "maniere", "moyen", "probleme", "souci", "question", "reponse", "solution",
+    "information", "aide", "besoin", "exemple", "partie", "nom", "numero", "type", "genre", "sorte", "point", "raison", "cause",
+    "resultat", "regle", "conseil", "message", "demande", "etape", "debut", "fin", "moment", "date", "heure", "minute", "semaine",
+    "mois", "annee", "matin", "soir", "hier", "demain", "personne", "gens", "monde", "service", "support", "informatique", "dsi",
+    "collectivite", "entreprise", "societe", "maison", "bureau", "travail",
+    // adjectifs et adverbes courants
+    "nouveau", "nouvelle", "ancien", "premier", "dernier", "prochain", "precedent", "actuel", "courant", "habituel", "general",
+    "mauvais", "grand", "petit", "possible", "impossible", "normal", "simple", "facile", "difficile", "different", "certain", "plusieurs",
+    "seul", "ensemble", "utile", "necessaire", "important", "complet", "unique", "meilleur", "disponible", "concerne",
+];
+
 fn stop_words() -> &'static HashSet<&'static str> {
     static SET: OnceLock<HashSet<&'static str>> = OnceLock::new();
     SET.get_or_init(|| STOP.iter().copied().collect())
+}
+
+/// Racines des mots courants de `GENERIC` (comparées aux racines produites par `terms`).
+fn generic_stems() -> &'static HashSet<String> {
+    static SET: OnceLock<HashSet<String>> = OnceLock::new();
+    SET.get_or_init(|| GENERIC.iter().map(|w| stem(w)).collect())
+}
+
+/// `stem` (racine produite par `terms`) est-elle celle d'un mot trop courant pour désigner un sujet à lui seul ?
+pub fn is_generic(stem: &str) -> bool {
+    generic_stems().contains(stem)
 }
 
 /// Racine d'un mot déjà replié : pluriels, féminin, terminaisons verbales courantes.
@@ -83,14 +119,16 @@ fn stem(w: &str) -> String {
     s.to_string()
 }
 
-/// Les mots utiles d'un texte, dans l'ordre (avec répétitions) : repliés, sans mots vides, sans nombres, ramenés à leur racine.
+/// Les mots utiles d'un texte, dans l'ordre (avec répétitions) : repliés, sans mots vides, ramenés à leur racine. Les nombres de
+/// deux à six chiffres comptent (« erreur 809 », « ports 500 et 4500 », « Windows 11 ») ; un chiffre seul (numéro d'étape) ou un
+/// très long nombre (téléphone, numéro de série) n'a pas de valeur pour rapprocher deux textes.
 pub fn terms(text: &str) -> Vec<String> {
     let stop = stop_words();
     fold(text)
         .split_whitespace()
-        .filter(|w| !stop.contains(w) && !w.chars().all(|c| c.is_ascii_digit()))
+        .filter(|w| !stop.contains(w) && (!w.chars().all(|c| c.is_ascii_digit()) || (2..=6).contains(&w.len())))
         .map(stem)
-        .filter(|t| t.chars().count() >= 3 || SHORT_TECH.contains(&t.as_str()))
+        .filter(|t| t.chars().count() >= 3 || SHORT_TECH.contains(&t.as_str()) || t.chars().all(|c| c.is_ascii_digit()))
         .collect()
 }
 
@@ -132,7 +170,9 @@ mod tests {
             vec!["redemarr", "post", "verifi", "connexion"]
         );
         assert_eq!(terms("Erreur 0x80070005 à l'ouverture de la session"), vec!["erreur", "0x80070005", "ouvertur", "session"]);
-        assert_eq!(terms("Version 2041 — ÉCRANS partagés"), vec!["version", "ecran", "partag"]);
+        // les nombres de deux à six chiffres sont des mots du domaine ; un chiffre seul ou un très long nombre non
+        assert_eq!(terms("Erreur 809 : ports 500 et 4500, Windows 11, étape 1, tél. 0123456789"), vec!["erreur", "809", "port", "500", "4500", "window", "11", "etap", "tel"]);
+        assert_eq!(terms("Version 2041 — ÉCRANS partagés"), vec!["version", "2041", "ecran", "partag"]);
         assert!(terms("Je ne sais pas, et vous ?").is_empty(), "que des mots vides");
         assert_eq!(norm_tag("  Wi-Fi  Invité "), "wi fi invite");
         assert_eq!(norm_tag("Accès"), "acces");
@@ -144,6 +184,25 @@ mod tests {
         assert_eq!(terms("Le Wi-Fi coupe"), vec!["wi", "fi", "coup"]);
         // les autres mots de deux lettres restent écartés
         assert!(terms("xy zz qw").is_empty());
+    }
+
+    #[test]
+    fn les_mots_courants_ne_designent_pas_un_sujet() {
+        for w in ["donner", "Donne-moi", "jour", "jours", "configurer", "configurez", "informatique", "problème", "Bonjour"] {
+            assert!(terms(w).iter().all(|t| is_generic(t)), "« {w} » devrait être courant");
+        }
+        // les mots du domaine, eux, désignent un sujet
+        for w in ["VPN", "imprimante", "Outlook", "mot de passe", "0x80070005", "ordinateur", "wifi", "synology"] {
+            assert!(terms(w).iter().all(|t| !is_generic(t)), "« {w} » ne devrait pas être courant");
+        }
+    }
+
+    #[test]
+    fn la_liste_de_mots_courants_est_repliee_et_sans_mot_vide() {
+        for w in GENERIC {
+            assert_eq!(fold(w).trim(), *w, "« {w} » n'est pas replié");
+            assert!(!stop_words().contains(w), "« {w} » est déjà un mot vide");
+        }
     }
 
     #[test]

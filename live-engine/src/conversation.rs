@@ -7,6 +7,15 @@ use crate::prompt::OPENING_PREFIX;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
+/// Les extraits qu'un message de l'assistant a cités.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct Citation {
+    /// Rang du message dans l'historique.
+    pub at: usize,
+    /// Numéros des extraits cités.
+    pub ids: Vec<i64>,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Saved {
@@ -17,6 +26,8 @@ pub struct Saved {
     pub user_name: String,
     /// Secondes depuis l'epoch Unix.
     pub updated: u64,
+    /// Extraits cités par l'assistant, message par message (affichés à nouveau quand la conversation est reprise).
+    pub citations: Vec<Citation>,
 }
 
 /// Clé de sauvegarde : le profil d'assistant.
@@ -24,14 +35,14 @@ pub fn key_for(persona: &str) -> Option<String> {
     valid_asset_name(persona).then(|| persona.to_string())
 }
 
-/// Messages à afficher : la consigne interne d'ouverture (« (Début de la conversation… ») n'en fait pas partie.
+/// Ce message s'affiche-t-il ? La consigne interne d'ouverture (« (Début de la conversation… ») non.
+pub fn is_visible(m: &ChatMsg) -> bool {
+    (m.role == "user" || m.role == "assistant") && !(m.role == "user" && m.content.starts_with(OPENING_PREFIX))
+}
+
+/// Messages à afficher.
 pub fn visible_messages(history: &[ChatMsg]) -> Vec<(String, String)> {
-    history
-        .iter()
-        .filter(|m| !(m.role == "user" && m.content.starts_with(OPENING_PREFIX)))
-        .filter(|m| m.role == "user" || m.role == "assistant")
-        .map(|m| (m.role.clone(), m.content.clone()))
-        .collect()
+    history.iter().filter(|m| is_visible(m)).map(|m| (m.role.clone(), m.content.clone())).collect()
 }
 
 pub struct ConversationStore {
@@ -106,10 +117,12 @@ mod tests {
             shown: vec![3, 7],
             user_name: "Marc".into(),
             updated: 42,
+            citations: vec![Citation { at: 1, ids: vec![12, 15] }],
         };
         st.save("repere", &saved).unwrap();
         let back = st.load("repere").unwrap();
         assert_eq!((back.history.len(), back.summary.as_str(), back.shown.clone(), back.user_name.as_str()), (3, "résumé", vec![3, 7], "Marc"));
+        assert_eq!(back.citations, vec![Citation { at: 1, ids: vec![12, 15] }]);
         assert_eq!(
             visible_messages(&back.history),
             vec![

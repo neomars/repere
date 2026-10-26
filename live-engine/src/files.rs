@@ -1,7 +1,7 @@
 //! Fichiers de la médiathèque sur le disque : retrouver celui qu'une adresse (« /videos/x.mp4 ») désigne dans le dossier
 //! d'uploads, et le supprimer — sans jamais sortir de ce dossier.
 
-use crate::media::{MediaItem, MediaLibrary};
+use crate::kb::{Source, KnowledgeBase};
 use std::path::{Component, Path, PathBuf};
 
 /// Dossiers d'uploads où vivent les médias et leurs miniatures.
@@ -34,7 +34,7 @@ pub struct Removed {
 
 /// Supprime du disque les fichiers (média et miniature) de ces médias, déjà retirés de la médiathèque. Un fichier encore utilisé par
 /// un autre média de la médiathèque reste. Les fichiers importés « par lien » n'effacent pas l'original : seul le lien de l'app part.
-pub fn remove_media_files(uploads: &Path, items: &[MediaItem], media: &MediaLibrary) -> Removed {
+pub fn remove_media_files(uploads: &Path, items: &[Source], media: &KnowledgeBase) -> Removed {
     let mut out = Removed::default();
     for item in items {
         for url in std::iter::once(item.url.as_str()).chain(item.thumb.as_deref()) {
@@ -92,11 +92,11 @@ mod tests {
     #[test]
     fn suppression_du_media_et_de_sa_miniature_sans_toucher_au_reste() {
         let up = tmp("rm");
-        let lib = MediaLibrary::open_in_memory().unwrap();
+        let lib = KnowledgeBase::open_in_memory().unwrap();
         for f in ["videos/a.mp4", "thumbnails/thumb-a.png", "photos/p.jpg", "videos/b.mp4"] {
             std::fs::write(up.join(f), b"x").unwrap();
         }
-        let item = |url: &str, thumb: Option<&str>| MediaItem { url: url.into(), thumb: thumb.map(String::from), ..Default::default() };
+        let item = |url: &str, thumb: Option<&str>| Source { url: url.into(), thumb: thumb.map(String::from), ..Default::default() };
         let a = item("/videos/a.mp4", Some("/thumbnails/thumb-a.png"));
         let p = item("/photos/p.jpg", Some("/thumbnails/absente.png"));
         let hors = item("/etc/passwd", None);

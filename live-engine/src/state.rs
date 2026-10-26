@@ -3,7 +3,7 @@ use crate::conversation::ConversationStore;
 use crate::engine::Engine;
 use crate::hardware::LlmPlan;
 use crate::llm::LlmClient;
-use crate::media::MediaLibrary;
+use crate::kb::KnowledgeBase;
 use crate::models::Models;
 use crate::persona::PersonaStore;
 use crate::voice::{Stt, Tts};
@@ -11,8 +11,10 @@ use std::sync::Arc;
 
 pub struct AppState {
     pub cfg: Arc<Config>,
-    pub media: MediaLibrary,
+    pub kb: KnowledgeBase,
     pub importer: crate::importer::Importer,
+    pub ingester: crate::ingest::Ingester,
+    pub tickets: crate::tickets::TicketStore,
     pub analyzer: crate::analyzer::Analyzer,
     pub personas: PersonaStore,
     pub conversations: ConversationStore,

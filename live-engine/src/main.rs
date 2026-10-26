@@ -4,18 +4,25 @@ mod config;
 mod conversation;
 mod director;
 mod engine;
+#[cfg(test)]
+mod eval;
+mod extract;
 mod files;
 mod gguf;
 mod hardware;
 mod importer;
+mod ingest;
+mod kb;
 mod llm;
-mod media;
 mod models;
 mod persona;
 mod prompt;
+mod search;
+mod secrets;
 mod state;
 mod terms;
 mod thesaurus;
+mod tickets;
 mod voice;
 mod webp;
 mod ws;
@@ -128,7 +135,8 @@ async fn main() -> anyhow::Result<()> {
         tokio::spawn(async move { e.autoload().await });
     }
 
-    let media = media::MediaLibrary::open(&cfg.server.data_dir.join("live.db"))?;
+    let kb = kb::KnowledgeBase::open(&cfg.server.data_dir.join("live.db"))?;
+    let tickets = tickets::TicketStore::open(&cfg.server.data_dir.join("tickets.db"))?;
     let personas = persona::PersonaStore::new(&cfg.server.data_dir.join("personas"))?;
     if personas.ensure_default() {
         tracing::info!("profil d'assistant « Repère » créé au premier lancement");
@@ -142,8 +150,10 @@ async fn main() -> anyhow::Result<()> {
         llm: llm::LlmClient::new(&cfg.llm.url, &cfg.llm.model),
         stt: cfg.stt.enabled.then(|| voice::Stt::new(cfg.stt.clone())),
         tts: cfg.tts.enabled.then(|| voice::Tts::new(cfg.tts.clone())),
-        media,
+        kb,
         importer: importer::Importer::new(),
+        ingester: ingest::Ingester::new(),
+        tickets,
         analyzer: analyzer::Analyzer::new(),
         personas,
         conversations,

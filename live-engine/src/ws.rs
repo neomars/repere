@@ -9,22 +9,25 @@
 //!   {"type":"settings","tts":false}
 //!   {"type":"reset","persona":"id"}  → supprime la conversation sauvegardée du profil (réponse « reset_done »)
 //!   {"type":"status"}         → l'état des serveurs (réponse « status »)
+//!   {"type":"ticket_draft"}   → prépare le ticket de la conversation en cours : titre, résumé, sources consultées
 //!   {"type":"voice_test","persona":"id"}  → fait dire une phrase d'essai avec la voix du profil
 //!   {"type":"speak","text":"...","persona":"id","req":3}  → lit un texte à voix haute (réécouter un message) ; ne coupe que la
 //!                             voix en cours, jamais la réponse qui s'écrit
 //! et en binaire : un WAV 16 kHz mono (parole de l'utilisateur).
 //!
 //! Serveur → client (JSON) : hello, status, persona, restored, reset_done, transcript, gen_start (une génération commence : son
-//! identifiant arrive AVANT ses jetons), token, media (la source affichée à côté de la conversation), media_miss, replies,
+//! identifiant arrive AVANT ses jetons), token, source (un extrait de document cité par la réponse en cours : lien cliquable),
+//! media (l'image affichée à côté de la conversation), media_miss, replies (avec `ticket` : le bouton qui ouvre un ticket),
+//! ticket_draft (le ticket prérempli demandé par `ticket_draft`),
 //! audio (toujours suivi, dans le même envoi, de sa trame binaire), speak_start (identifiant d'une lecture à la demande, avec
 //! le `req` de la demande), voice_end (la voix a envoyé toutes ses phrases : {"gen":id}), tts_error, done, interrupted, error.
 
-use crate::conversation::{key_for, visible_messages, Saved};
+use crate::conversation::{is_visible, key_for, Citation, Saved};
 use crate::director::{chunk_for_tts, for_speech, Directive, Piece, SentenceSplitter, StreamParser, MAX_CHUNK};
+use crate::kb::{KnowledgeBase, Source};
 use crate::llm::ChatMsg;
-use crate::media::{MediaItem, MediaLibrary};
 use crate::persona::Persona;
-use crate::prompt::{estimate_tokens, opening_instruction, system_prompt, MediaCtx, UserInfo, OPENING_PREFIX};
+use crate::prompt::{estimate_tokens, opening_instruction, system_prompt, SourcesCtx, UserInfo, OPENING_PREFIX};
 use crate::state::AppState;
 use crate::voice::{Tts, TtsStyle};
 use axum::extract::ws::{Message, WebSocket};
@@ -61,10 +64,19 @@ struct Session {
     speak_n: u64,
     /// Nombre de tours de parole depuis le début de la conversation.
     turn: u32,
-    /// Numéros des sources proposées à l'IA à ce tour : `[[show: #id]]` ne peut viser que celles-là.
+    /// Numéros des sources proposées à l'IA à ce tour (extraits et images) : `[[source: #id]]` et `[[show: #id]]` ne peuvent viser
+    /// que celles-là.
     offered: Vec<i64>,
     /// La source montrée en dernier (et à quel tour) : l'IA sait ce que l'utilisateur a sous les yeux.
-    screen: Option<(u32, MediaItem)>,
+    screen: Option<(u32, Source)>,
+    /// Extraits cités depuis le début de la conversation (sans doublon) : les « sources consultées » du ticket.
+    cited: Vec<i64>,
+    /// Extraits cités par chaque message de l'assistant : (rang du message dans l'historique, numéros).
+    citations: Vec<(usize, Vec<i64>)>,
+    /// Extraits cités par la réponse en cours d'écriture.
+    turn_cited: Vec<i64>,
+    /// La réponse en cours a déjà proposé des boutons de réponse.
+    replies_sent: bool,
 }
 
 impl Session {
@@ -84,36 +96,87 @@ impl Session {
             turn: 0,
             offered: vec![],
             screen: None,
+            cited: vec![],
+            citations: vec![],
+            turn_cited: vec![],
+            replies_sent: false,
         }
+    }
+
+    /// Repart de zéro : plus d'historique, de résumé, de sources montrées ni citées.
+    fn clear_conversation(&mut self) {
+        self.history.clear();
+        self.summary.clear();
+        self.shown.clear();
+        self.turn = 0;
+        self.offered.clear();
+        self.screen = None;
+        self.cited.clear();
+        self.citations.clear();
+        self.turn_cited.clear();
     }
 }
 
 /// Nombre de sources proposées à l'IA à chaque tour.
-const MAX_PICKS: usize = 4;
-/// Place que prennent dans le prompt système les sources proposées (estimation, par excès).
-const SOURCES_TOKENS: usize = MAX_PICKS * 70;
+pub const MAX_PICKS: usize = 4;
+/// Place que prennent dans le prompt système les sources proposées et les consignes qui les accompagnent (estimation, par excès :
+/// un extrait de 1 200 caractères pèse environ 370 jetons).
+const SOURCES_TOKENS: usize = MAX_PICKS * 380 + 300;
 
 /// Consigne du moteur (ouverture de la conversation) plutôt que parole de l'utilisateur.
 fn is_instruction(m: &ChatMsg) -> bool {
     m.role == "user" && m.content.starts_with(OPENING_PREFIX)
 }
 
-/// Textes qui décrivent la question en cours, avec leur poids dans la recherche de sources : les derniers échanges (le plus
-/// récent compte le plus), puis le résumé de ce qui précède.
-fn scene_parts(history: &[ChatMsg], summary: &str) -> Vec<(String, f64)> {
-    let said: Vec<&ChatMsg> = history.iter().filter(|m| !is_instruction(m)).collect();
+/// Textes qui décrivent la question en cours, avec leur poids dans la recherche de sources : les derniers messages de l'utilisateur
+/// (le plus récent compte le plus), puis le résumé de ce qui précède. Les réponses de l'assistant n'en font pas partie : son message
+/// d'accueil et ses propres réponses (déjà tirées des extraits précédents) ramèneraient toujours les mêmes extraits, au lieu de suivre
+/// le sujet de l'utilisateur.
+pub(crate) fn scene_parts(history: &[ChatMsg], summary: &str) -> Vec<(String, f64)> {
+    let said: Vec<&ChatMsg> = history.iter().filter(|m| m.role == "user" && !is_instruction(m)).collect();
     let mut parts: Vec<(String, f64)> = said.iter().rev().zip([1.0, 0.7, 0.5]).map(|(m, w)| (m.content.clone(), w)).collect();
     parts.push((summary.to_string(), 0.3));
     parts.retain(|(t, _)| !t.trim().is_empty());
     parts
 }
 
-/// La source n°`id`, si l'IA a le droit de l'afficher : elle figurait dans la liste proposée à ce tour et n'a pas déjà été montrée.
-fn allowed_pick(media: &MediaLibrary, s: &Session, id: i64) -> Option<MediaItem> {
-    if !s.offered.contains(&id) || s.shown.contains(&id) {
+/// La source n°`id`, si l'IA a le droit de la citer ou de l'afficher : elle figurait dans la liste proposée à ce tour, et si c'est une
+/// image, elle n'a pas déjà été montrée. Un numéro inventé, ou proposé à un autre tour, ne donne rien.
+fn allowed_pick(kb: &KnowledgeBase, s: &Session, id: i64) -> Option<Source> {
+    if !s.offered.contains(&id) {
         return None;
     }
-    media.get(id)
+    let source = kb.get(id)?;
+    if !source.is_passage() && s.shown.contains(&id) {
+        return None;
+    }
+    Some(source)
+}
+
+/// Ce que le navigateur reçoit d'un extrait cité : de quoi afficher un lien (titre, section) et un aperçu au survol.
+fn source_json(p: &Source) -> Value {
+    json!({
+        "id": p.id, "title": p.title, "section": p.section, "page": p.page, "doc_id": p.doc_id, "link": p.link,
+        "excerpt": crate::prompt::short(&crate::secrets::mask(&p.description), 180),
+    })
+}
+
+/// L'IA dit-elle qu'elle ne sait pas ? (la formule demandée par les règles : « Je ne sais pas : je n'ai pas trouvé cela… »)
+fn says_unknown(text: &str) -> bool {
+    let t = crate::terms::fold(text);
+    ["je ne sais pas", "je n ai pas trouve", "je ne trouve pas", "aucune source ne"].iter().any(|m| t.contains(m))
+}
+
+/// Les boutons proposés quand l'IA ne sait pas et n'a pas proposé les siens.
+const UNKNOWN_REPLIES: [&str; 2] = ["Ouvrir un ticket", "Reformuler"];
+
+/// Parmi des boutons de réponse, celui qui ouvre un ticket (le modèle l'écrit « Ouvrir un ticket », « Créer un ticket »…).
+fn ticket_button(items: &[String]) -> Option<&String> {
+    items.iter().find(|i| crate::terms::fold(i).split_whitespace().any(|w| w == "ticket" || w == "tickets"))
+}
+
+fn replies_json(items: &[String]) -> Value {
+    json!({"type":"replies","items":items,"ticket":ticket_button(items)})
 }
 
 /// État des serveurs, tel que l'interface l'affiche (et le rafraîchit toutes les quelques secondes).
@@ -187,6 +250,7 @@ pub async fn handle_socket(socket: WebSocket, app: Arc<AppState>) {
                         reset_conversation(&app, &session, v["persona"].as_str().unwrap_or("")).await;
                         send(&out, json!({"type":"reset_done"}));
                     }
+                    "ticket_draft" => ticket_draft(&app, &session, &out).await,
                     "voice_test" => voice_test(&app, &session, &out, v["persona"].as_str()).await,
                     "speak" => {
                         let text = v["text"].as_str().unwrap_or("").to_string();
@@ -248,18 +312,13 @@ async fn on_start(app: &Arc<AppState>, session: &Arc<Mutex<Session>>, out: &Out,
     interrupt(session).await;
     {
         let mut s = session.lock().await;
-        s.history.clear();
-        s.summary.clear();
-        s.shown.clear();
+        s.clear_conversation();
         if let Some(b) = v["tts"].as_bool() {
             s.tts_on = b && app.tts.is_some();
         }
         s.user = UserInfo::new(v["user_name"].as_str().unwrap_or(""));
         s.persona = Some(persona.clone());
         s.conv_key = key_for(&persona.id);
-        s.turn = 0;
-        s.offered.clear();
-        s.screen = None;
     }
     send(out, json!({"type":"persona","persona":persona}));
     let mut st = status_fields(app).await;
@@ -289,11 +348,32 @@ async fn restore(app: &Arc<AppState>, session: &Arc<Mutex<Session>>, out: &Out) 
     s.history = saved.history.clone();
     s.summary = saved.summary.clone();
     s.shown = saved.shown.iter().copied().collect();
+    s.citations = saved.citations.iter().filter(|c| c.at < saved.history.len()).map(|c| (c.at, c.ids.clone())).collect();
+    s.cited = vec![];
+    for id in s.citations.iter().flat_map(|(_, ids)| ids.clone()).collect::<Vec<_>>() {
+        if !s.cited.contains(&id) {
+            s.cited.push(id);
+        }
+    }
     // Le prénom donné aujourd'hui l'emporte ; sans prénom, on retrouve celui de la conversation.
     if s.user.name.is_empty() {
         s.user = UserInfo::new(&saved.user_name);
     }
-    let messages: Vec<Value> = visible_messages(&s.history).into_iter().map(|(role, text)| json!({"role": role, "text": text})).collect();
+    let messages: Vec<Value> = s
+        .history
+        .iter()
+        .enumerate()
+        .filter(|(_, m)| is_visible(m))
+        .map(|(i, m)| {
+            let mut v = json!({"role": m.role, "text": m.content});
+            // les extraits que ce message citait (ceux qui ont été retirés de la base depuis n'y sont plus)
+            let sources: Vec<Value> = s.citations.iter().filter(|(at, _)| *at == i).flat_map(|(_, ids)| ids).filter_map(|id| app.kb.get(*id)).filter(Source::is_passage).map(|p| source_json(&p)).collect();
+            if !sources.is_empty() {
+                v["sources"] = json!(sources);
+            }
+            v
+        })
+        .collect();
     send(out, json!({"type":"restored","messages":messages,"user_name":s.user.name,"updated":saved.updated}));
     true
 }
@@ -311,6 +391,7 @@ fn save_conversation(app: &AppState, s: &Session) {
         shown: s.shown.iter().copied().collect(),
         user_name: s.user.name.clone(),
         updated: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0),
+        citations: s.citations.iter().map(|(at, ids)| Citation { at: *at, ids: ids.clone() }).collect(),
     };
     if let Err(e) = app.conversations.save(key, &saved) {
         tracing::warn!("sauvegarde de la conversation impossible : {e}");
@@ -324,12 +405,7 @@ async fn reset_conversation(app: &Arc<AppState>, session: &Arc<Mutex<Session>>, 
     interrupt(session).await;
     let mut s = session.lock().await;
     if s.conv_key.as_deref() == Some(key.as_str()) {
-        s.history.clear();
-        s.summary.clear();
-        s.shown.clear();
-        s.turn = 0;
-        s.offered.clear();
-        s.screen = None;
+        s.clear_conversation();
     }
 }
 
@@ -357,13 +433,13 @@ async fn start_turn(app: &Arc<AppState>, session: &Arc<Mutex<Session>>, out: &Ou
     let (messages, temp, sampling) = {
         let mut s = session.lock().await;
         let p = s.persona.clone().unwrap();
-        // Les sources dont la description se rapproche de la conversation sont proposées à l'IA à chaque tour : elle répond d'après
-        // elles, et décide d'en afficher une ou non.
-        let picks = app.media.relevant(&scene_parts(&s.history, &s.summary), &s.shown, MAX_PICKS);
+        // Les sources (extraits de documents, images) qui se rapprochent de la conversation sont proposées à l'IA à chaque tour : elle
+        // répond d'après elles, cite celles qu'elle utilise et décide d'afficher une image ou non.
+        let picks = app.kb.relevant(&scene_parts(&s.history, &s.summary), &s.shown, MAX_PICKS);
         s.offered = picks.iter().map(|m| m.id).collect();
         let on_screen = s.screen.as_ref().filter(|(t, _)| s.turn.saturating_sub(*t) <= 1).map(|(_, m)| m.clone());
-        let media = MediaCtx { picks: &picks, on_screen: on_screen.as_ref() };
-        let sys = system_prompt(&p, &s.user, &media, &s.summary);
+        let sources = SourcesCtx { picks: &picks, on_screen: on_screen.as_ref() };
+        let sys = system_prompt(&p, &s.user, &sources, &s.summary);
         let mut m = vec![ChatMsg::new("system", sys)];
         m.extend(s.history.iter().cloned());
         (m, p.temperature.unwrap_or(app.cfg.llm.temperature), p.sampling.clone())
@@ -543,6 +619,21 @@ impl Speech {
     }
 }
 
+/// Consigne du résumé de conversation d'assistance : elle sert à alléger l'historique (`compact`) et à préremplir un ticket.
+const SUMMARY_RULES: &str = "Tu résumes des conversations d'assistance informatique de façon factuelle et compacte (≤ 200 mots), en gardant : \
+    le problème de l'utilisateur, le matériel et les logiciels concernés, les messages d'erreur exacts, les étapes déjà essayées et leur \
+    résultat, ce qui reste à faire. N'ajoute rien qui n'ait pas été dit. Ne conserve aucun mot de passe ni code secret.";
+
+/// Résume des échanges en reprenant le résumé précédent. `None` si le modèle ne répond pas ou ne dit rien.
+async fn summarize(app: &Arc<AppState>, previous: &str, messages: &[ChatMsg]) -> Option<String> {
+    let transcript = messages.iter().filter(|m| !is_instruction(m)).map(|m| format!("{}: {}", m.role, m.content)).collect::<Vec<_>>().join("\n");
+    let ask = vec![
+        ChatMsg::new("system", SUMMARY_RULES),
+        ChatMsg::new("user", format!("Résumé précédent :\n{previous}\n\nNouveaux échanges :\n{transcript}\n\nNouveau résumé :")),
+    ];
+    app.llm.complete(&ask, 0.3, 400).await.ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
+}
+
 /// Résume les plus anciens tours quand le contexte approche de sa limite.
 async fn compact(app: &Arc<AppState>, session: &Arc<Mutex<Session>>) {
     let to_summarize = {
@@ -558,24 +649,46 @@ async fn compact(app: &Arc<AppState>, session: &Arc<Mutex<Session>>) {
         }
     };
     let Some((old, prev, n)) = to_summarize else { return };
-    let transcript = old.iter().map(|m| format!("{}: {}", m.role, m.content)).collect::<Vec<_>>().join("\n");
-    let ask = vec![
-        ChatMsg::new("system", "Tu résumes des conversations d'assistance informatique de façon factuelle et compacte (≤ 200 mots), en gardant : \
-            le problème de l'utilisateur, le matériel et les logiciels concernés, les messages d'erreur exacts, les étapes déjà essayées et leur \
-            résultat, ce qui reste à faire. N'ajoute rien qui n'ait pas été dit. Ne conserve aucun mot de passe ni code secret."),
-        ChatMsg::new("user", format!("Résumé précédent :\n{prev}\n\nNouveaux échanges :\n{transcript}\n\nNouveau résumé :")),
-    ];
-    let summary = app.llm.complete(&ask, 0.3, 400).await.unwrap_or(prev);
+    let summary = summarize(app, &prev, &old).await.unwrap_or(prev);
     let mut s = session.lock().await;
     let n = n.min(s.history.len());
     s.history.drain(..n);
+    s.citations.retain_mut(|(at, _)| match at.checked_sub(n) {
+        Some(shifted) => {
+            *at = shifted;
+            true
+        }
+        None => false,
+    });
     s.summary = summary;
+}
+
+/// Prépare le ticket de la conversation en cours : le résumé de tout ce qui s'est dit (même résumeur que `compact`), les sources
+/// consultées, le prénom. L'utilisateur relit, corrige et valide ; rien n'est enregistré ici.
+async fn ticket_draft(app: &Arc<AppState>, session: &Arc<Mutex<Session>>, out: &Out) {
+    let (history, previous, user, cited) = {
+        let s = session.lock().await;
+        (s.history.iter().filter(|m| is_visible(m)).cloned().collect::<Vec<_>>(), s.summary.clone(), s.user.name.clone(), s.cited.clone())
+    };
+    if !history.iter().any(|m| m.role == "user") {
+        send(out, json!({"type":"error","message":"Il n'y a encore rien à mettre dans un ticket : décrivez d'abord votre problème."}));
+        return;
+    }
+    let summary = summarize(app, &previous, &history).await;
+    let sources: Vec<crate::tickets::ConsultedSource> = cited.iter().filter_map(|id| app.kb.get(*id)).filter(Source::is_passage).map(|p| crate::tickets::ConsultedSource::of(&p)).collect();
+    let draft = crate::tickets::compose(summary.as_deref(), &history, &user, &sources);
+    let mut msg = json!(draft);
+    msg["type"] = json!("ticket_draft");
+    msg["user_name"] = json!(user);
+    send(out, msg);
 }
 
 async fn launch(app: &Arc<AppState>, session: &Arc<Mutex<Session>>, out: &Out, tokens: TokenStream) {
     let (gen_id, tts_on, voice, style) = {
         let mut s = session.lock().await;
         s.gen_id += 1;
+        s.turn_cited.clear();
+        s.replies_sent = false;
         let (voice, style) = voice_of(s.persona.as_ref());
         (s.gen_id, s.tts_on, voice, style)
     };
@@ -641,14 +754,14 @@ async fn run_generation(
             Ok(t) => {
                 let pieces = parser.feed(&t);
                 let ds = handle_pieces(pieces, &mut raw);
-                apply_directives(&app, &session, &out, ds).await;
+                apply_directives(&app, &session, &out, gen_id, ds).await;
             }
             Err(e) => { stream_error = Some(e.to_string()); break; }
         }
     }
     let pieces = parser.finish();
     let ds = handle_pieces(pieces, &mut raw);
-    apply_directives(&app, &session, &out, ds).await;
+    apply_directives(&app, &session, &out, gen_id, ds).await;
     if let Some(sp) = speech.as_mut() {
         sp.finish();
     }
@@ -657,32 +770,61 @@ async fn run_generation(
     if let Some(e) = stream_error {
         send(&out, json!({"type":"error","message":format!("LLM : {e}")}));
     }
-    {
+    let propose_ticket = {
         let mut s = session.lock().await;
         if s.gen_id == gen_id && !raw.trim().is_empty() {
             s.history.push(ChatMsg::new("assistant", raw.trim().to_string()));
+            if !s.turn_cited.is_empty() {
+                let (at, ids) = (s.history.len() - 1, std::mem::take(&mut s.turn_cited));
+                s.citations.push((at, ids));
+            }
             save_conversation(&app, &s);
         }
+        // Filet de sécurité : une IA qui dit ne pas savoir propose toujours le ticket, même si elle a oublié les boutons.
+        s.gen_id == gen_id && !s.replies_sent && says_unknown(&raw)
+    };
+    if propose_ticket {
+        let items: Vec<String> = UNKNOWN_REPLIES.iter().map(|b| b.to_string()).collect();
+        send(&out, replies_json(&items));
     }
     send(&out, json!({"type":"done","gen":gen_id}));
 }
 
 /// Applique les directives de l'IA.
-async fn apply_directives(app: &Arc<AppState>, session: &Arc<Mutex<Session>>, out: &Out, ds: Vec<Directive>) {
+async fn apply_directives(app: &Arc<AppState>, session: &Arc<Mutex<Session>>, out: &Out, gen_id: u64, ds: Vec<Directive>) {
     for d in ds {
         match d {
-            Directive::ShowId { id } => {
-                let mut s = session.lock().await;
-                match allowed_pick(&app.media, &s, id) {
-                    Some(m) => {
-                        s.shown.insert(m.id);
-                        s.screen = Some((s.turn, m.clone()));
-                        send(out, json!({"type":"media","mode":"main","item":m}));
+            Directive::ShowId { id } => pick(app, session, out, gen_id, &[id]).await,
+            Directive::Source { ids } => pick(app, session, out, gen_id, &ids).await,
+            Directive::Replies { items } => {
+                session.lock().await.replies_sent = true;
+                send(out, replies_json(&items));
+            }
+        }
+    }
+}
+
+/// Cite des extraits ou affiche une image, à condition qu'ils aient été proposés à ce tour. Un extrait déjà cité par cette réponse ne
+/// l'est pas deux fois ; `[[show]]` sur un extrait le cite, `[[source]]` sur une image l'affiche : seul compte ce que la source est.
+async fn pick(app: &Arc<AppState>, session: &Arc<Mutex<Session>>, out: &Out, gen_id: u64, ids: &[i64]) {
+    for &id in ids {
+        let mut s = session.lock().await;
+        match allowed_pick(&app.kb, &s, id) {
+            Some(p) if p.is_passage() => {
+                if !s.turn_cited.contains(&id) {
+                    s.turn_cited.push(id);
+                    if !s.cited.contains(&id) {
+                        s.cited.push(id);
                     }
-                    None => send(out, json!({"type":"media_miss"})),
+                    send(out, json!({"type":"source","gen":gen_id,"source":source_json(&p)}));
                 }
             }
-            Directive::Replies { items } => send(out, json!({"type":"replies","items":items})),
+            Some(m) => {
+                s.shown.insert(m.id);
+                s.screen = Some((s.turn, m.clone()));
+                send(out, json!({"type":"media","mode":"main","item":m}));
+            }
+            None => send(out, json!({"type":"media_miss","id":id})),
         }
     }
 }
@@ -703,26 +845,40 @@ mod tests {
     }
 
     #[test]
-    fn la_question_est_decrite_par_les_derniers_echanges() {
+    fn la_question_est_decrite_par_les_derniers_messages_de_l_utilisateur() {
         // ouverture : seule la consigne du moteur dans l'historique → rien à chercher
         let h = vec![msg("user", &opening_instruction(&UserInfo::default()))];
         assert!(scene_parts(&h, "").is_empty());
-        // plus tard : les trois derniers messages (le plus récent d'abord, le plus lourd), puis le résumé
-        let h = vec![msg("assistant", "a"), msg("user", "b"), msg("assistant", "c"), msg("user", "d")];
+        // plus tard : les trois derniers messages de l'utilisateur (le plus récent d'abord, le plus lourd), puis le résumé
+        let h = vec![msg("assistant", "a"), msg("user", "b"), msg("assistant", "c"), msg("user", "d"), msg("user", "e"), msg("user", "f")];
         assert_eq!(
             scene_parts(&h, "Résumé."),
-            vec![("d".into(), 1.0), ("c".into(), 0.7), ("b".into(), 0.5), ("Résumé.".into(), 0.3)]
+            vec![("f".into(), 1.0), ("e".into(), 0.7), ("d".into(), 0.5), ("Résumé.".into(), 0.3)]
         );
         // la consigne d'ouverture au milieu de l'historique n'est pas une parole
         let h = vec![msg("user", "Bonjour"), msg("assistant", "Salut"), msg("user", &opening_instruction(&UserInfo::default())), msg("user", "Mon VPN ne marche pas")];
         let parts = scene_parts(&h, "");
-        assert_eq!(parts.iter().map(|(t, _)| t.as_str()).collect::<Vec<_>>(), vec!["Mon VPN ne marche pas", "Salut", "Bonjour"]);
+        assert_eq!(parts.iter().map(|(t, _)| t.as_str()).collect::<Vec<_>>(), vec!["Mon VPN ne marche pas", "Bonjour"]);
+    }
+
+    #[test]
+    fn les_reponses_de_l_assistant_ne_pilotent_pas_la_recherche() {
+        // Le message d'accueil (« …support informatique… décrivez votre problème ») et les réponses précédentes, tirées des extraits
+        // déjà proposés, ramèneraient toujours les mêmes extraits : seule la parole de l'utilisateur décrit la question.
+        let h = vec![
+            msg("assistant", "Bonjour, je suis Repère, l'assistant du support informatique. Décrivez votre problème."),
+            msg("user", "Mon VPN affiche l'erreur 809"),
+            msg("assistant", "Autorisez les ports UDP 500 et 4500 dans le pare-feu."),
+            msg("user", "Ça ne marche toujours pas"),
+        ];
+        let parts = scene_parts(&h, "");
+        assert_eq!(parts.iter().map(|(t, _)| t.as_str()).collect::<Vec<_>>(), vec!["Ça ne marche toujours pas", "Mon VPN affiche l'erreur 809"]);
     }
 
     #[test]
     fn l_ia_ne_montre_que_les_sources_proposees_et_pas_deja_montrees() {
-        let lib = MediaLibrary::open_in_memory().unwrap();
-        let item = |url: &str| MediaItem { url: url.into(), description: "Erreur VPN 809".into(), ..Default::default() };
+        let lib = KnowledgeBase::open_in_memory().unwrap();
+        let item = |url: &str| Source { url: url.into(), description: "Erreur VPN 809".into(), ..Default::default() };
         let (a, b, c) = (lib.insert(&item("/a.png")).unwrap(), lib.insert(&item("/b.png")).unwrap(), lib.insert(&item("/c.png")).unwrap());
         let mut s = Session::new(false);
         s.offered = vec![a, b];
@@ -733,6 +889,77 @@ mod tests {
         s.shown.insert(a);
         assert!(allowed_pick(&lib, &s, a).is_none(), "déjà montrée");
         assert_eq!(allowed_pick(&lib, &s, b).map(|m| m.id), Some(b));
+    }
+
+    fn document_de_test(lib: &KnowledgeBase) -> Vec<i64> {
+        use crate::kb::{NewDocument, NewPassage};
+        let d = NewDocument { name: "vpn.md".into(), title: "Guide VPN".into(), format: "md".into(), hash: "h".repeat(64), url: Some("https://intranet.exemple.fr/vpn".into()), ..Default::default() };
+        let passages = [("Erreur 809", "Autorisez les ports UDP 500 et 4500."), ("Erreur 691", "Vérifiez le mot de passe : Printemps2024!")]
+            .map(|(section, text)| NewPassage { section: section.into(), text: text.into(), page: None });
+        let (doc, _) = lib.add_document(&d, &passages).unwrap();
+        lib.passages_of(doc).unwrap().into_iter().map(|p| p.id).collect()
+    }
+
+    #[test]
+    fn l_ia_ne_cite_que_les_extraits_proposes_a_ce_tour() {
+        let lib = KnowledgeBase::open_in_memory().unwrap();
+        let ids = document_de_test(&lib);
+        let mut s = Session::new(false);
+        s.offered = vec![ids[0]];
+        let p = allowed_pick(&lib, &s, ids[0]).expect("proposé : citable");
+        assert!(p.is_passage() && p.section == "Erreur 809");
+        assert!(allowed_pick(&lib, &s, ids[1]).is_none(), "existe dans la base mais n'a pas été proposé à ce tour");
+        assert!(allowed_pick(&lib, &s, 99_999).is_none(), "numéro inventé");
+        // un extrait peut être cité à plusieurs tours (contrairement à une image, montrée une seule fois)
+        s.shown.insert(ids[0]);
+        assert!(allowed_pick(&lib, &s, ids[0]).is_some());
+        // le navigateur reçoit le titre, la section, l'adresse d'origine et un aperçu sans mot de passe
+        let j = source_json(&allowed_pick(&lib, &{ let mut t = Session::new(false); t.offered = vec![ids[1]]; t }, ids[1]).unwrap());
+        assert_eq!((j["title"].as_str(), j["section"].as_str(), j["link"].as_str()), (Some("Guide VPN"), Some("Erreur 691"), Some("https://intranet.exemple.fr/vpn")));
+        let apercu = j["excerpt"].as_str().unwrap();
+        assert!(apercu.contains("[masqué]") && !apercu.contains("Printemps2024"), "{apercu}");
+    }
+
+    #[test]
+    fn une_ia_qui_ne_sait_pas_est_reconnue_et_le_bouton_de_ticket_aussi() {
+        for t in [
+            "Je ne sais pas : je n'ai pas trouvé cela dans la base de connaissances.",
+            "Désolé, je n’ai pas trouvé de procédure pour ce logiciel.",
+            "JE NE SAIS PAS répondre à cela.",
+            "Aucune source ne parle de cette imprimante.",
+        ] {
+            assert!(says_unknown(t), "{t}");
+        }
+        for t in ["Voici la marche à suivre : 1. Redémarrez.", "Je sais que cela peut gêner, mais voici la solution.", "Bonjour !", ""] {
+            assert!(!says_unknown(t), "{t}");
+        }
+        let items = |l: &[&str]| l.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(ticket_button(&items(&["Ça a marché", "Ouvrir un ticket"])).map(String::as_str), Some("Ouvrir un ticket"));
+        assert_eq!(ticket_button(&items(&["Créer un Ticket", "Reformuler"])).map(String::as_str), Some("Créer un Ticket"));
+        assert_eq!(ticket_button(&items(&["Ça a marché", "Reformuler"])), None);
+        assert_eq!(ticket_button(&items(&["Mon ticketing est lent"])), None, "le mot entier seulement");
+        let j = replies_json(&items(&UNKNOWN_REPLIES));
+        assert_eq!((j["type"].as_str(), j["items"].as_array().map(Vec::len), j["ticket"].as_str()), (Some("replies"), Some(2), Some("Ouvrir un ticket")));
+        assert!(replies_json(&items(&["Oui"]))["ticket"].is_null());
+    }
+
+    #[test]
+    fn les_citations_suivent_les_messages_quand_les_plus_anciens_sont_resumes() {
+        let mut s = Session::new(false);
+        s.citations = vec![(1, vec![5]), (3, vec![6, 7]), (7, vec![8])];
+        // le décalage fait par compact() : les 4 premiers messages disparaissent
+        let n = 4;
+        s.citations.retain_mut(|(at, _)| match at.checked_sub(n) {
+            Some(shifted) => {
+                *at = shifted;
+                true
+            }
+            None => false,
+        });
+        assert_eq!(s.citations, vec![(3, vec![8])]);
+        s.cited = vec![1];
+        s.clear_conversation();
+        assert!(s.citations.is_empty() && s.cited.is_empty() && s.history.is_empty());
     }
 
     /// Ce que le travailleur de voix recevrait pour un texte livré par petits jetons.

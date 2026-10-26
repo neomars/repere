@@ -1,33 +1,71 @@
-//! Médiathèque : fichiers annotés (titre, description, tags) dans SQLite, et moteur de recherche que le moteur interroge à chaque
-//! tour pour proposer à l'IA les sources les plus proches de la conversation.
+//! Base de connaissances : des sources annotées dans SQLite, et la recherche que le moteur interroge à chaque tour pour proposer à
+//! l'IA celles qui répondent à la conversation. Une source est un extrait (« passage ») d'un document importé, ou une image ou une
+//! vidéo décrite. Les passages d'un même document sont groupés dans la table `documents`.
 
-use crate::terms::terms;
+use crate::search::{Index, Report};
 use crate::thesaurus::Thesaurus;
 use rusqlite::{params, Connection, Row};
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
+/// Genre d'une source qui n'est pas un fichier média : un extrait de document.
+pub const PASSAGE: &str = "passage";
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct MediaItem {
+pub struct Source {
     pub id: i64,
-    pub kind: String, // "video" | "photo"
+    pub kind: String, // "video" | "photo" | "passage"
+    /// Fichier média ; pour un passage, une clé interne (`kb:<document>:<rang>`).
     pub url: String,
     pub thumb: Option<String>,
+    /// Titre du fichier ; pour un passage, titre du document.
     pub title: String,
+    /// Description d'un média ; pour un passage, son texte.
     pub description: String,
     pub tags: Vec<String>,
     /// Décrit par l'analyse d'image (description et tags remplis par un modèle de vision).
     #[serde(default)]
     pub analyzed: bool,
+    /// Passage : document d'où il vient.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub doc_id: Option<i64>,
+    /// Passage : chemin de titres (« Erreurs courantes › Erreur 809 »).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub section: String,
+    /// Passage : page du début (PDF).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub page: Option<u32>,
+    /// Passage : adresse d'origine du document (page de l'intranet), si on la connaît.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub link: Option<String>,
 }
 
-impl Default for MediaItem {
+impl Source {
+    pub fn is_passage(&self) -> bool {
+        self.kind == PASSAGE
+    }
+}
+
+impl Default for Source {
     fn default() -> Self {
-        Self { id: 0, kind: "video".into(), url: String::new(), thumb: None, title: String::new(), description: String::new(), tags: vec![], analyzed: false }
+        Self {
+            id: 0,
+            kind: "video".into(),
+            url: String::new(),
+            thumb: None,
+            title: String::new(),
+            description: String::new(),
+            tags: vec![],
+            analyzed: false,
+            doc_id: None,
+            section: String::new(),
+            page: None,
+            link: None,
+        }
     }
 }
 
@@ -47,7 +85,7 @@ pub struct MediaPatch {
     pub add_tags: Option<Vec<String>>,
 }
 
-/// Recherche de l'écran de la médiathèque (pagination côté base : des milliers de fichiers ne se chargent pas d'un coup).
+/// Recherche de l'écran des images (pagination côté base : des milliers de fichiers ne se chargent pas d'un coup).
 #[derive(Debug, Default, Clone)]
 pub struct MediaFilter {
     pub text: String,
@@ -60,7 +98,67 @@ pub struct MediaFilter {
     pub limit: usize,
 }
 
-pub struct MediaLibrary {
+/// Un document importé.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct Document {
+    pub id: i64,
+    /// Clé du document : son chemin dans le dossier importé, ou son nom de fichier. Réimporter la même clé remplace le document.
+    pub name: String,
+    pub title: String,
+    /// `md`, `html`, `docx`, `pdf` ou `txt`.
+    pub format: String,
+    /// Empreinte SHA-256 du fichier d'origine : un fichier inchangé n'est pas relu.
+    pub hash: String,
+    pub bytes: u64,
+    pub url: Option<String>,
+    pub tags: Vec<String>,
+    pub passages: usize,
+    /// Secondes depuis l'epoch Unix.
+    pub imported_at: i64,
+    /// Ce qui a été lu avec difficulté (page de PDF illisible, mots de passe repérés dans le texte…).
+    pub warnings: Vec<String>,
+    /// Copie du fichier d'origine, dans le dossier de la base de connaissances (nom du fichier).
+    #[serde(skip)]
+    pub stored: Option<String>,
+    /// Le fichier d'origine est conservé.
+    pub has_file: bool,
+    /// Des mots de passe ou des clés ont été repérés dans le texte : le fichier d'origine n'est pas proposé au téléchargement et les
+    /// passages sont masqués quand on les affiche.
+    pub secrets: bool,
+}
+
+/// Un document à enregistrer, avec ses passages.
+#[derive(Debug, Clone, Default)]
+pub struct NewDocument {
+    pub name: String,
+    pub title: String,
+    pub format: String,
+    pub hash: String,
+    pub bytes: u64,
+    pub url: Option<String>,
+    pub tags: Vec<String>,
+    pub stored: Option<String>,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct NewPassage {
+    /// Chemin de titres affiché (« Erreurs courantes › Erreur 809 »).
+    pub section: String,
+    pub text: String,
+    pub page: Option<u32>,
+}
+
+/// Ce que la base contient.
+#[derive(Debug, Clone, Default, Serialize, PartialEq)]
+pub struct Stats {
+    pub documents: usize,
+    pub passages: usize,
+    pub images: usize,
+    pub videos: usize,
+}
+
+pub struct KnowledgeBase {
     conn: Mutex<Connection>,
     /// Change à chaque modification de la base : l'index de recherche se reconstruit alors à la prochaine recherche.
     generation: AtomicU64,
@@ -68,50 +166,6 @@ pub struct MediaLibrary {
     /// Fichier de synonymes de l'utilisateur (`synonyms.txt`, à côté de la base) : relu dès qu'il change.
     synonyms_file: Option<PathBuf>,
     thesaurus: Mutex<Option<(Option<SystemTime>, Arc<Thesaurus>)>>,
-}
-
-/// Un fichier prêt à être comparé à un texte : ses mots utiles (tags, titre, description).
-struct Doc {
-    item: MediaItem,
-    words: HashSet<String>,
-}
-
-/// Les fichiers de la médiathèque et la rareté de chaque mot : un mot présent dans toutes les descriptions ne départage rien.
-struct Index {
-    generation: u64,
-    /// Version du fichier de synonymes de l'utilisateur avec lequel l'index a été construit.
-    stamp: Option<SystemTime>,
-    /// Le dictionnaire de synonymes en vigueur. Pas encore consulté par `relevant()` : il le sera pour élargir la requête (phase 2),
-    /// l'index se reconstruit déjà quand le fichier de l'utilisateur change.
-    #[allow(dead_code)]
-    thesaurus: Arc<Thesaurus>,
-    docs: Vec<Doc>,
-    df: HashMap<String, u32>,
-}
-
-impl Index {
-    fn build(generation: u64, stamp: Option<SystemTime>, thesaurus: Arc<Thesaurus>, items: Vec<MediaItem>) -> Self {
-        let mut docs = Vec::with_capacity(items.len());
-        let mut df: HashMap<String, u32> = HashMap::new();
-        for item in items {
-            let mut words: HashSet<String> = HashSet::new();
-            words.extend(item.tags.iter().flat_map(|t| terms(t)));
-            words.extend(terms(&item.title));
-            words.extend(terms(&item.description));
-            for w in &words {
-                *df.entry(w.clone()).or_default() += 1;
-            }
-            docs.push(Doc { words, item });
-        }
-        Self { generation, stamp, thesaurus, docs, df }
-    }
-
-    /// Poids d'un mot : fort s'il est rare dans la médiathèque, faible (mais jamais nul) s'il est partout.
-    fn idf(&self, word: &str) -> f64 {
-        let n = self.docs.len() as f64;
-        let df = self.df.get(word).copied().unwrap_or(0) as f64;
-        ((n + 1.0) / (df + 0.5)).ln().max(0.1)
-    }
 }
 
 const SCHEMA: &str = "
@@ -127,23 +181,40 @@ CREATE TABLE IF NOT EXISTS media (
   analyzed_at INTEGER,
   analysis_model TEXT
 );
+CREATE TABLE IF NOT EXISTS documents (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL UNIQUE,
+  title TEXT NOT NULL,
+  format TEXT NOT NULL,
+  hash TEXT NOT NULL,
+  bytes INTEGER NOT NULL DEFAULT 0,
+  url TEXT,
+  tags TEXT NOT NULL DEFAULT '',
+  stored TEXT,
+  imported_at INTEGER NOT NULL DEFAULT 0,
+  warnings TEXT NOT NULL DEFAULT ''
+);
 ";
 
 /// Colonnes ajoutées après coup : une base plus ancienne les reçoit au démarrage (l'erreur « colonne déjà là » est ignorée).
 /// Les colonnes d'une base plus ancienne qui ne servent plus y restent, sans effet : elles ont toutes une valeur par défaut.
-const ADDED_COLUMNS: [&str; 3] = ["src_key TEXT", "analyzed_at INTEGER", "analysis_model TEXT"];
+const ADDED_COLUMNS: [&str; 8] =
+    ["src_key TEXT", "analyzed_at INTEGER", "analysis_model TEXT", "doc_id INTEGER", "ord INTEGER", "section TEXT NOT NULL DEFAULT ''", "page INTEGER", "link TEXT"];
 
-/// Empreinte du fichier d'origine (anti-doublons) : index unique.
-const MIGRATE: &str = "CREATE UNIQUE INDEX IF NOT EXISTS media_src_key ON media(src_key) WHERE src_key IS NOT NULL;";
+/// Empreinte du fichier d'origine (anti-doublons) : index unique ; passages d'un document.
+const MIGRATE: &str = "
+CREATE UNIQUE INDEX IF NOT EXISTS media_src_key ON media(src_key) WHERE src_key IS NOT NULL;
+CREATE INDEX IF NOT EXISTS media_doc ON media(doc_id, ord);
+";
 
-const COLS: &str = "id,kind,url,thumb,title,description,tags,analyzed_at";
+const COLS: &str = "id,kind,url,thumb,title,description,tags,analyzed_at,doc_id,section,page,link";
 
 fn split_tags(s: &str) -> Vec<String> {
     s.split(',').map(|t| t.trim().to_lowercase()).filter(|t| !t.is_empty()).collect()
 }
 
-fn from_row(r: &Row) -> rusqlite::Result<MediaItem> {
-    Ok(MediaItem {
+fn from_row(r: &Row) -> rusqlite::Result<Source> {
+    Ok(Source {
         id: r.get(0)?,
         kind: r.get(1)?,
         url: r.get(2)?,
@@ -152,10 +223,41 @@ fn from_row(r: &Row) -> rusqlite::Result<MediaItem> {
         description: r.get(5)?,
         tags: split_tags(&r.get::<_, String>(6)?),
         analyzed: r.get::<_, Option<i64>>(7)?.is_some(),
+        doc_id: r.get(8)?,
+        section: r.get::<_, Option<String>>(9)?.unwrap_or_default(),
+        page: r.get::<_, Option<i64>>(10)?.map(|p| p as u32),
+        link: r.get(11)?,
     })
 }
 
-impl MediaLibrary {
+const DOC_COLS: &str = "d.id,d.name,d.title,d.format,d.hash,d.bytes,d.url,d.tags,d.stored,d.imported_at,d.warnings,(SELECT COUNT(*) FROM media m WHERE m.doc_id=d.id)";
+
+fn document_from_row(r: &Row) -> rusqlite::Result<Document> {
+    let stored: Option<String> = r.get(8)?;
+    let warnings: Vec<String> = r.get::<_, String>(10)?.lines().filter(|l| !l.is_empty()).map(str::to_string).collect();
+    Ok(Document {
+        id: r.get(0)?,
+        name: r.get(1)?,
+        title: r.get(2)?,
+        format: r.get(3)?,
+        hash: r.get(4)?,
+        bytes: r.get::<_, i64>(5)? as u64,
+        url: r.get(6)?,
+        tags: split_tags(&r.get::<_, String>(7)?),
+        passages: r.get::<_, i64>(11)? as usize,
+        imported_at: r.get(9)?,
+        secrets: warnings.iter().any(|w| w.starts_with(crate::secrets::WARNING)),
+        warnings,
+        has_file: stored.is_some(),
+        stored,
+    })
+}
+
+fn unix_now() -> i64 {
+    SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
+}
+
+impl KnowledgeBase {
     pub fn open(path: &Path) -> anyhow::Result<Self> {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;
@@ -192,6 +294,28 @@ impl MediaLibrary {
         (stamp, th)
     }
 
+    /// Le fichier de synonymes de l'utilisateur : son texte (vide s'il n'existe pas encore). `None` quand la base n'a pas de dossier
+    /// (base en mémoire) : on ne peut pas l'écrire.
+    pub fn synonyms(&self) -> Option<String> {
+        self.synonyms_file.as_ref().map(|p| std::fs::read_to_string(p).unwrap_or_default())
+    }
+
+    /// Nombre de concepts du dictionnaire en vigueur (celui de base et celui de l'utilisateur).
+    pub fn concept_count(&self) -> usize {
+        self.thesaurus().1.len()
+    }
+
+    /// Remplace le fichier de synonymes de l'utilisateur. Les recherches suivantes en tiennent compte aussitôt.
+    pub fn set_synonyms(&self, text: &str) -> anyhow::Result<()> {
+        let Some(path) = self.synonyms_file.as_ref() else { anyhow::bail!("cette base n'a pas de dossier de données : le dictionnaire ne peut pas être enregistré") };
+        let tmp = path.with_extension("txt.tmp");
+        std::fs::write(&tmp, text)?;
+        std::fs::rename(&tmp, path)?;
+        *self.thesaurus.lock().unwrap() = None; // relu même si l'horodatage du fichier n'a pas bougé
+        self.touch();
+        Ok(())
+    }
+
     /// À appeler après toute modification de la base.
     fn touch(&self) {
         self.generation.fetch_add(1, Ordering::AcqRel);
@@ -205,7 +329,7 @@ impl MediaLibrary {
         if let Some(ix) = slot.as_ref().filter(|ix| ix.generation == generation && ix.stamp == stamp) {
             return ix.clone();
         }
-        let ix = Arc::new(Index::build(generation, stamp, thesaurus, self.list().unwrap_or_default()));
+        let ix = Arc::new(Index::build(generation, stamp, thesaurus, self.all_sources().unwrap_or_default()));
         *slot = Some(ix.clone());
         ix
     }
@@ -220,7 +344,7 @@ impl MediaLibrary {
     }
 
     /// Ajoute un fichier ; `None` s'il existe déjà (même URL, ou même empreinte de fichier d'origine).
-    pub fn insert_new(&self, m: &MediaItem, src_key: Option<&str>) -> anyhow::Result<Option<i64>> {
+    pub fn insert_new(&self, m: &Source, src_key: Option<&str>) -> anyhow::Result<Option<i64>> {
         let c = self.conn.lock().unwrap();
         let n = c.execute(
             "INSERT OR IGNORE INTO media (kind,url,thumb,title,description,tags,src_key)
@@ -237,7 +361,7 @@ impl MediaLibrary {
     }
 
     /// Une page de fichiers (les plus récents d'abord) et le nombre total correspondant au filtre.
-    pub fn query(&self, f: &MediaFilter) -> anyhow::Result<(usize, Vec<MediaItem>)> {
+    pub fn query(&self, f: &MediaFilter) -> anyhow::Result<(usize, Vec<Source>)> {
         let mut conds: Vec<String> = vec![];
         let mut args: Vec<String> = vec![];
         for w in f.text.split_whitespace().take(6) {
@@ -247,9 +371,12 @@ impl MediaLibrary {
             let i = args.len();
             conds.push(format!("(lower(title) LIKE ?{i} ESCAPE '\\' OR lower(tags) LIKE ?{i} ESCAPE '\\' OR lower(description) LIKE ?{i} ESCAPE '\\')"));
         }
-        if let Some(k) = &f.kind {
-            args.push(k.clone());
-            conds.push(format!("kind=?{}", args.len()));
+        match &f.kind {
+            Some(k) => {
+                args.push(k.clone());
+                conds.push(format!("kind=?{}", args.len()));
+            }
+            None => conds.push(format!("kind <> '{PASSAGE}'")),
         }
         if f.untagged {
             conds.push("tags=''".into());
@@ -269,8 +396,8 @@ impl MediaLibrary {
 
     /// Fichiers à analyser, du plus ancien au plus récent : `new` = jamais analysés, `all` = tous, `ids` = la sélection.
     /// `kind` limite aux vidéos ou aux photos.
-    pub fn to_analyze(&self, scope: &str, ids: &[i64], kind: Option<&str>, limit: Option<usize>) -> anyhow::Result<Vec<MediaItem>> {
-        let mut conds: Vec<String> = vec![];
+    pub fn to_analyze(&self, scope: &str, ids: &[i64], kind: Option<&str>, limit: Option<usize>) -> anyhow::Result<Vec<Source>> {
+        let mut conds: Vec<String> = vec![format!("kind <> '{PASSAGE}'")];
         match scope {
             "ids" => {
                 if ids.is_empty() {
@@ -306,7 +433,7 @@ impl MediaLibrary {
 
     /// Enregistre le résultat d'une analyse. Sans `overwrite`, ce que vous avez réglé est respecté : les tags s'ajoutent à ceux qui
     /// existent déjà ; avec, ils sont remplacés. La description est toujours remplacée.
-    pub fn apply_analysis(&self, id: i64, a: &Analysis, model: &str, overwrite: bool) -> anyhow::Result<Option<MediaItem>> {
+    pub fn apply_analysis(&self, id: i64, a: &Analysis, model: &str, overwrite: bool) -> anyhow::Result<Option<Source>> {
         let Some(mut m) = self.get(id) else { return Ok(None) };
         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
         m.analyzed = true;
@@ -341,14 +468,14 @@ impl MediaLibrary {
         let c = self.conn.lock().unwrap();
         let mut n = 0;
         for id in ids {
-            n += c.execute("DELETE FROM media WHERE id=?1", [id])?;
+            n += c.execute(&format!("DELETE FROM media WHERE id=?1 AND kind <> '{PASSAGE}'"), [id])?;
         }
         self.touch();
         Ok(n)
     }
 
     #[cfg(test)]
-    pub fn insert(&self, m: &MediaItem) -> anyhow::Result<i64> {
+    pub fn insert(&self, m: &Source) -> anyhow::Result<i64> {
         let c = self.conn.lock().unwrap();
         c.execute(
             "INSERT OR IGNORE INTO media (kind,url,thumb,title,description,tags)
@@ -359,19 +486,28 @@ impl MediaLibrary {
         Ok(c.query_row("SELECT id FROM media WHERE url=?1", [&m.url], |r| r.get(0))?)
     }
 
-    pub fn get(&self, id: i64) -> Option<MediaItem> {
+    pub fn get(&self, id: i64) -> Option<Source> {
         let c = self.conn.lock().unwrap();
         c.query_row(&format!("SELECT {COLS} FROM media WHERE id=?1"), [id], from_row).ok()
     }
 
-    pub fn list(&self) -> anyhow::Result<Vec<MediaItem>> {
+    /// Les images et les vidéos (pas les passages de documents).
+    pub fn list(&self) -> anyhow::Result<Vec<Source>> {
+        let c = self.conn.lock().unwrap();
+        let mut st = c.prepare(&format!("SELECT {COLS} FROM media WHERE kind <> '{PASSAGE}' ORDER BY id"))?;
+        let rows = st.query_map([], from_row)?.collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    /// Toutes les sources, passages compris : de quoi construire l'index de recherche.
+    fn all_sources(&self) -> anyhow::Result<Vec<Source>> {
         let c = self.conn.lock().unwrap();
         let mut st = c.prepare(&format!("SELECT {COLS} FROM media ORDER BY id"))?;
         let rows = st.query_map([], from_row)?.collect::<Result<Vec<_>, _>>()?;
         Ok(rows)
     }
 
-    pub fn patch(&self, id: i64, p: &MediaPatch) -> anyhow::Result<Option<MediaItem>> {
+    pub fn patch(&self, id: i64, p: &MediaPatch) -> anyhow::Result<Option<Source>> {
         let Some(mut m) = self.get(id) else { return Ok(None) };
         if let Some(v) = &p.title { m.title = v.clone(); }
         if let Some(v) = &p.description { m.description = v.clone(); }
@@ -390,49 +526,117 @@ impl MediaLibrary {
         Ok(Some(m))
     }
 
-    /// Les fichiers dont le texte rappelle la conversation en cours, du plus pertinent au moins pertinent : de quoi proposer à l'IA
+    /// Les sources qui répondent à la conversation en cours, de la plus pertinente à la moins pertinente : de quoi proposer à l'IA
     /// des sources pour sa réponse. `parts` = textes de la conversation avec leur poids (le dernier message compte plus que le
-    /// résumé). Un fichier doit partager avec elle au moins deux mots utiles (ou un seul, rare et dit à l'instant), pesés par leur
-    /// rareté dans la médiathèque ; ceux de `exclude` (déjà montrés) sont écartés.
-    pub fn relevant(&self, parts: &[(String, f64)], exclude: &HashSet<i64>, limit: usize) -> Vec<MediaItem> {
-        let ix = self.index();
-        if ix.docs.is_empty() || limit == 0 {
-            return vec![];
+    /// résumé) ; `exclude` = images déjà montrées. Voir `search::Index::search` pour ce qui rend une source assez proche.
+    pub fn relevant(&self, parts: &[(String, f64)], exclude: &HashSet<i64>, limit: usize) -> Vec<Source> {
+        self.search(parts, exclude, limit).hits.into_iter().map(|h| h.source).collect()
+    }
+
+    /// Comme `relevant`, avec l'explication du classement (écran d'essai de la recherche).
+    pub fn search(&self, parts: &[(String, f64)], exclude: &HashSet<i64>, limit: usize) -> Report {
+        self.index().search(parts, exclude, limit)
+    }
+
+    // ───────────────────────────── documents et passages
+
+    /// Enregistre un document et ses passages. Un document de même clé (`name`) est remplacé, passages compris ; l'ancien est rendu
+    /// pour que l'appelant puisse supprimer la copie de son fichier d'origine.
+    pub fn add_document(&self, d: &NewDocument, passages: &[NewPassage]) -> anyhow::Result<(i64, Option<Document>)> {
+        let mut c = self.conn.lock().unwrap();
+        let tx = c.transaction()?;
+        let previous: Option<Document> = tx.query_row(&format!("SELECT {DOC_COLS} FROM documents d WHERE d.name=?1"), [&d.name], document_from_row).ok();
+        if let Some(p) = &previous {
+            tx.execute("DELETE FROM media WHERE doc_id=?1", [p.id])?;
+            tx.execute("DELETE FROM documents WHERE id=?1", [p.id])?;
         }
-        let mut weights: HashMap<String, f64> = HashMap::new();
-        for (text, w) in parts {
-            for t in terms(text) {
-                let e = weights.entry(t).or_insert(0.0);
-                *e = e.max(*w);
+        tx.execute(
+            "INSERT INTO documents (name,title,format,hash,bytes,url,tags,stored,imported_at,warnings) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+            params![d.name, d.title, d.format, d.hash, d.bytes as i64, d.url, d.tags.join(","), d.stored, unix_now(), d.warnings.join("\n")],
+        )?;
+        let id = tx.last_insert_rowid();
+        {
+            let mut insert = tx.prepare(
+                "INSERT INTO media (kind,url,title,description,tags,doc_id,ord,section,page,link) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+            )?;
+            for (i, p) in passages.iter().enumerate() {
+                insert.execute(params![PASSAGE, format!("kb:{id}:{i}"), d.title, p.text, d.tags.join(","), id, i as i64, p.section, p.page.map(i64::from), d.url])?;
             }
         }
-        if weights.is_empty() {
-            return vec![];
+        tx.commit()?;
+        self.touch();
+        Ok((id, previous))
+    }
+
+    pub fn document(&self, id: i64) -> Option<Document> {
+        let c = self.conn.lock().unwrap();
+        c.query_row(&format!("SELECT {DOC_COLS} FROM documents d WHERE d.id=?1"), [id], document_from_row).ok()
+    }
+
+    pub fn document_by_name(&self, name: &str) -> Option<Document> {
+        let c = self.conn.lock().unwrap();
+        c.query_row(&format!("SELECT {DOC_COLS} FROM documents d WHERE d.name=?1"), [name], document_from_row).ok()
+    }
+
+    /// Un document dont le fichier d'origine a cette empreinte (le même fichier sous un autre nom).
+    pub fn document_by_hash(&self, hash: &str) -> Option<Document> {
+        let c = self.conn.lock().unwrap();
+        c.query_row(&format!("SELECT {DOC_COLS} FROM documents d WHERE d.hash=?1 ORDER BY d.id LIMIT 1"), [hash], document_from_row).ok()
+    }
+
+    /// Les documents, par titre.
+    pub fn documents(&self) -> anyhow::Result<Vec<Document>> {
+        let c = self.conn.lock().unwrap();
+        let mut st = c.prepare(&format!("SELECT {DOC_COLS} FROM documents d ORDER BY d.title COLLATE NOCASE, d.id"))?;
+        let rows = st.query_map([], document_from_row)?.collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    /// Retire un document et ses passages. Rend le document retiré (pour supprimer la copie de son fichier d'origine).
+    pub fn delete_document(&self, id: i64) -> anyhow::Result<Option<Document>> {
+        let Some(doc) = self.document(id) else { return Ok(None) };
+        let mut c = self.conn.lock().unwrap();
+        let tx = c.transaction()?;
+        tx.execute("DELETE FROM media WHERE doc_id=?1", [id])?;
+        tx.execute("DELETE FROM documents WHERE id=?1", [id])?;
+        tx.commit()?;
+        self.touch();
+        Ok(Some(doc))
+    }
+
+    /// Les passages d'un document, dans l'ordre de lecture.
+    pub fn passages_of(&self, doc_id: i64) -> anyhow::Result<Vec<Source>> {
+        let c = self.conn.lock().unwrap();
+        let mut st = c.prepare(&format!("SELECT {COLS} FROM media WHERE doc_id=?1 ORDER BY ord"))?;
+        let rows = st.query_map([doc_id], from_row)?.collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    /// Le passage qui précède et celui qui suit un passage dans son document.
+    pub fn neighbors(&self, id: i64) -> (Option<Source>, Option<Source>) {
+        let c = self.conn.lock().unwrap();
+        let Ok((doc, ord)) = c.query_row("SELECT doc_id, ord FROM media WHERE id=?1 AND doc_id IS NOT NULL", [id], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?))) else {
+            return (None, None);
+        };
+        let one = |cmp: &str, order: &str| c.query_row(&format!("SELECT {COLS} FROM media WHERE doc_id=?1 AND ord{cmp}?2 ORDER BY ord {order} LIMIT 1"), params![doc, ord], from_row).ok();
+        (one("<", "DESC"), one(">", "ASC"))
+    }
+
+    /// Un document utilise-t-il encore cette copie de fichier d'origine ?
+    pub fn stored_in_use(&self, stored: &str) -> bool {
+        let c = self.conn.lock().unwrap();
+        c.query_row("SELECT 1 FROM documents WHERE stored=?1", [stored], |_| Ok(())).is_ok()
+    }
+
+    pub fn stats(&self) -> Stats {
+        let c = self.conn.lock().unwrap();
+        let count = |sql: &str| c.query_row(sql, [], |r| r.get::<_, i64>(0)).unwrap_or(0) as usize;
+        Stats {
+            documents: count("SELECT COUNT(*) FROM documents"),
+            passages: count(&format!("SELECT COUNT(*) FROM media WHERE kind='{PASSAGE}'")),
+            images: count("SELECT COUNT(*) FROM media WHERE kind='photo'"),
+            videos: count("SELECT COUNT(*) FROM media WHERE kind='video'"),
         }
-        let threshold = (0.9 * ((ix.docs.len() + 1) as f64).ln()).min(3.0);
-        // Un mot présent dans peu de fichiers, et dit dans le dernier message, suffit à lui seul.
-        let rare = (ix.docs.len() / 20).max(1) as u32;
-        let mut scored: Vec<(f64, &Doc)> = vec![];
-        for d in &ix.docs {
-            if exclude.contains(&d.item.id) {
-                continue;
-            }
-            let (mut score, mut hits, mut strong) = (0.0, 0, false);
-            for (word, w) in &weights {
-                if d.words.contains(word) {
-                    score += w * ix.idf(word);
-                    hits += 1;
-                    strong |= *w >= 0.9 && ix.df.get(word).is_some_and(|df| *df <= rare);
-                }
-            }
-            // deux mots en commun doivent peser assez (pas seulement des mots courants) ; un seul, il doit être rare
-            if (hits >= 2 && score < threshold) || (hits < 2 && !strong) {
-                continue;
-            }
-            scored.push((score, d));
-        }
-        scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal).then(b.1.item.id.cmp(&a.1.item.id)));
-        scored.into_iter().take(limit).map(|(_, d)| d.item.clone()).collect()
     }
 
     /// Parcourt le dossier d'uploads et référence les fichiers inconnus (vidéos ET photos).
@@ -459,7 +663,7 @@ impl MediaLibrary {
             if rel.starts_with("thumbnails/") { continue; }
             let url = format!("/{rel}");
             let title = f.file_stem().and_then(|s| s.to_str()).unwrap_or("").replace(['_', '-'], " ");
-            let added = self.insert_new(&MediaItem { id: 0, kind: kind.into(), url, thumb: None, title, ..Default::default() }, None)?;
+            let added = self.insert_new(&Source { id: 0, kind: kind.into(), url, thumb: None, title, ..Default::default() }, None)?;
             if added.is_some() { n += 1; }
         }
         Ok(n)
@@ -469,14 +673,15 @@ impl MediaLibrary {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::terms::terms;
 
-    fn item(url: &str, tags: &[&str]) -> MediaItem {
-        MediaItem { url: url.into(), title: url.into(), tags: tags.iter().map(|s| s.to_string()).collect(), ..Default::default() }
+    fn item(url: &str, tags: &[&str]) -> Source {
+        Source { url: url.into(), title: url.into(), tags: tags.iter().map(|s| s.to_string()).collect(), ..Default::default() }
     }
 
     /// Un fichier décrit, sans titre (le titre d'un fichier importé ajouterait du bruit).
-    fn decrit(url: &str, description: &str, tags: &[&str]) -> MediaItem {
-        MediaItem {
+    fn decrit(url: &str, description: &str, tags: &[&str]) -> Source {
+        Source {
             kind: if url.ends_with(".jpg") { "photo" } else { "video" }.into(),
             url: url.into(),
             description: description.into(),
@@ -485,8 +690,8 @@ mod tests {
         }
     }
 
-    fn bibliotheque() -> (MediaLibrary, [i64; 4]) {
-        let lib = MediaLibrary::open_in_memory().unwrap();
+    fn bibliotheque() -> (KnowledgeBase, [i64; 4]) {
+        let lib = KnowledgeBase::open_in_memory().unwrap();
         let a = lib.insert(&decrit("/a.jpg", "Fenêtre de connexion au VPN : le message « Échec de l'authentification » s'affiche après la saisie de l'identifiant.", &["vpn", "authentification"])).unwrap();
         let b = lib.insert(&decrit("/b.jpg", "Boîte de dialogue d'Outlook qui demande de saisir de nouveau les identifiants de la messagerie.", &["outlook", "messagerie"])).unwrap();
         let c = lib.insert(&decrit("/c.jpg", "File d'impression bloquée : le document reste en attente sur l'imprimante du deuxième étage.", &["imprimante", "impression"])).unwrap();
@@ -498,14 +703,14 @@ mod tests {
         vec![(texte.to_string(), 1.0)]
     }
 
-    fn ids(lib: &MediaLibrary, parts: &[(String, f64)], shown: &[i64], limit: usize) -> Vec<i64> {
+    fn ids(lib: &KnowledgeBase, parts: &[(String, f64)], shown: &[i64], limit: usize) -> Vec<i64> {
         let ex: HashSet<i64> = shown.iter().copied().collect();
         lib.relevant(parts, &ex, limit).into_iter().map(|m| m.id).collect()
     }
 
     #[test]
     fn insert_est_idempotent() {
-        let lib = MediaLibrary::open_in_memory().unwrap();
+        let lib = KnowledgeBase::open_in_memory().unwrap();
         let a = lib.insert(&item("/a.mp4", &[])).unwrap();
         let b = lib.insert(&item("/a.mp4", &[])).unwrap();
         assert_eq!(a, b);
@@ -514,7 +719,7 @@ mod tests {
 
     #[test]
     fn recherche_paginee_filtres_et_empreinte() {
-        let lib = MediaLibrary::open_in_memory().unwrap();
+        let lib = KnowledgeBase::open_in_memory().unwrap();
         for i in 0..7 {
             let mut m = item(&format!("/v{i}.mp4"), &if i % 2 == 0 { vec!["vpn"] } else { vec![] });
             m.title = format!("Guide {i} accès distant");
@@ -537,7 +742,7 @@ mod tests {
 
     #[test]
     fn ajout_de_tags_en_lot_et_retrait_de_la_mediatheque() {
-        let lib = MediaLibrary::open_in_memory().unwrap();
+        let lib = KnowledgeBase::open_in_memory().unwrap();
         let a = lib.insert(&item("/a.mp4", &["vpn"])).unwrap();
         let b = lib.insert(&item("/b.mp4", &[])).unwrap();
         let patch = MediaPatch { add_tags: Some(vec![" Wi-Fi ".into(), "vpn".into()]), ..Default::default() };
@@ -577,7 +782,7 @@ mod tests {
 
     #[test]
     fn plusieurs_sources_classees_de_la_plus_pertinente() {
-        let lib = MediaLibrary::open_in_memory().unwrap();
+        let lib = KnowledgeBase::open_in_memory().unwrap();
         let x = lib.insert(&decrit("/x.mp4", "Ajouter une imprimante réseau sur un poste Windows : ouvrir Paramètres, puis Imprimantes et scanners.", &["imprimante", "windows"])).unwrap();
         let y = lib.insert(&decrit("/y.mp4", "Installer le pilote d'une imprimante locale USB sur un poste Windows.", &["imprimante", "usb"])).unwrap();
         let z = lib.insert(&decrit("/z.mp4", "Configurer la messagerie sur un smartphone.", &["messagerie", "mobile"])).unwrap();
@@ -649,7 +854,7 @@ mod tests {
             std::fs::create_dir_all(p.parent().unwrap()).unwrap();
             std::fs::write(p, contenu).unwrap();
         }
-        let lib = MediaLibrary::open_in_memory().unwrap();
+        let lib = KnowledgeBase::open_in_memory().unwrap();
         assert_eq!(lib.scan_uploads(&dir).unwrap(), 2, "miniatures et autres formats ignorés");
         assert_eq!(lib.scan_uploads(&dir).unwrap(), 0, "un second passage n'ajoute rien");
         let titres: Vec<String> = lib.list().unwrap().into_iter().map(|m| m.title).collect();
@@ -662,7 +867,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("repere-syn-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        let lib = MediaLibrary::open(&dir.join("live.db")).unwrap();
+        let lib = KnowledgeBase::open(&dir.join("live.db")).unwrap();
         let concepts = |text: &str| {
             let (_, th) = lib.thesaurus();
             th.triggers(&terms(text)).0.into_iter().map(|c| th.name(c).to_string()).collect::<Vec<_>>()
@@ -682,6 +887,24 @@ mod tests {
     }
 
     #[test]
+    fn le_dictionnaire_s_enregistre_depuis_l_administration() {
+        let dir = std::env::temp_dir().join(format!("repere-syn2-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let lib = KnowledgeBase::open(&dir.join("live.db")).unwrap();
+        assert_eq!(lib.synonyms().as_deref(), Some(""), "pas encore de fichier");
+        let avant = lib.concept_count();
+        lib.set_synonyms("citrix, bureau virtuel, workspace\n").unwrap();
+        assert_eq!(lib.synonyms().as_deref(), Some("citrix, bureau virtuel, workspace\n"));
+        assert_eq!(lib.concept_count(), avant + 1, "pris en compte aussitôt, sans attendre un autre horodatage");
+        // sans dossier de données, on ne peut pas écrire
+        let memoire = KnowledgeBase::open_in_memory().unwrap();
+        assert!(memoire.synonyms().is_none());
+        assert!(memoire.set_synonyms("a, b\n").is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn base_ancienne_sans_colonne_d_empreinte_migree() {
         let dir = std::env::temp_dir().join(format!("repere-mig-{}.db", std::process::id()));
         let _ = std::fs::remove_file(&dir);
@@ -689,7 +912,7 @@ mod tests {
             let c = Connection::open(&dir).unwrap();
             c.execute_batch("CREATE TABLE media (id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL, url TEXT NOT NULL UNIQUE, thumb TEXT, title TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '', tags TEXT NOT NULL DEFAULT '', ancienne_a TEXT NOT NULL DEFAULT '', ancienne_b INTEGER NOT NULL DEFAULT 1, ancienne_c INTEGER NOT NULL DEFAULT 0); INSERT INTO media (kind,url) VALUES ('video','/old.mp4');").unwrap();
         }
-        let lib = MediaLibrary::open(&dir).unwrap();
+        let lib = KnowledgeBase::open(&dir).unwrap();
         assert_eq!(lib.list().unwrap().len(), 1, "l'ancien fichier reste lisible malgré les colonnes en trop");
         assert!(lib.insert_new(&item("/new.mp4", &[]), Some("k")).unwrap().is_some(), "et l'on peut en ajouter");
         let _ = std::fs::remove_file(&dir);

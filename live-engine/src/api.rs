@@ -1,6 +1,6 @@
 //! Routes REST d'administration + point d'entrée WebSocket.
 
-use crate::media::MediaPatch;
+use crate::kb::MediaPatch;
 use crate::models::Kind;
 use crate::persona::Persona;
 use crate::state::AppState;
@@ -64,6 +64,20 @@ pub fn router() -> Router<App> {
         .route("/media/scan", post(media_scan))
         .route("/media/bulk", post(media_bulk))
         .route("/media/{id}", axum::routing::patch(media_patch))
+        .route("/kb/stats", get(|State(a): State<App>| async move { Json(json!(a.kb.stats())) }))
+        .route(
+            "/kb/documents",
+            get(kb_documents).put(kb_upload).layer(DefaultBodyLimit::max(crate::extract::MAX_DOCUMENT_BYTES + 64 * 1024)),
+        )
+        .route("/kb/documents/{id}", get(kb_document).delete(kb_document_delete))
+        .route("/kb/documents/{id}/file", get(kb_document_file))
+        .route("/kb/passages/{id}", get(kb_passage))
+        .route("/kb/import", get(kb_import_status).post(kb_import_start))
+        .route("/kb/import/cancel", post(kb_import_cancel))
+        .route("/kb/search", get(kb_search))
+        .route("/kb/synonyms", get(kb_synonyms).put(kb_synonyms_put))
+        .route("/tickets", get(tickets_list).post(ticket_create))
+        .route("/tickets/{id}", axum::routing::patch(ticket_status))
         .route("/conversations", get(conversations_list))
         .route("/personas", get(personas_list))
         .route("/personas/{id}", get(persona_get).put(persona_put).delete(persona_delete))
@@ -99,7 +113,8 @@ async fn health(State(a): State<App>) -> Json<Value> {
         "llm": a.llm.healthy().await, "stt": stt, "tts": tts,
         "voice": a.voice_status().await,
         "plan": a.plan(),
-        "media_count": a.media.list().map(|l| l.len()).unwrap_or(0),
+        "media_count": a.kb.list().map(|l| l.len()).unwrap_or(0),
+        "kb": a.kb.stats(),
     }))
 }
 
@@ -107,7 +122,7 @@ async fn health(State(a): State<App>) -> Json<Value> {
 /// (`q` = mots cherchés dans titre/tags/description, `kind` = video|photo, `untagged=1`, `analysis` = todo|done, `offset`).
 async fn media_list(State(a): State<App>, Query(q): Query<std::collections::HashMap<String, String>>) -> ApiResult {
     if q.contains_key("limit") {
-        let f = crate::media::MediaFilter {
+        let f = crate::kb::MediaFilter {
             text: q.get("q").cloned().unwrap_or_default(),
             kind: q.get("kind").filter(|k| matches!(k.as_str(), "video" | "photo")).cloned(),
             untagged: q.get("untagged").is_some_and(|v| v == "1" || v == "true"),
@@ -115,10 +130,10 @@ async fn media_list(State(a): State<App>, Query(q): Query<std::collections::Hash
             offset: q.get("offset").and_then(|v| v.parse().ok()).unwrap_or(0),
             limit: q.get("limit").and_then(|v| v.parse().ok()).unwrap_or(60),
         };
-        let (total, items) = a.media.query(&f).map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+        let (total, items) = a.kb.query(&f).map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?;
         return Ok(Json(json!({ "total": total, "items": items })));
     }
-    let items = a.media.list().map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    let items = a.kb.list().map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?;
     Ok(Json(json!(items)))
 }
 
@@ -126,9 +141,9 @@ async fn media_list(State(a): State<App>, Query(q): Query<std::collections::Hash
 /// l'app, pas l'original d'un import « par lien ».
 async fn media_delete(State(a): State<App>, h: HeaderMap, Json(b): Json<IdsBody>) -> ApiResult {
     authorize(&a, &h)?;
-    let items: Vec<_> = if b.files { b.ids.iter().filter_map(|id| a.media.get(*id)).collect() } else { vec![] };
-    let n = a.media.delete_many(&b.ids).map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?;
-    let r = crate::files::remove_media_files(&a.cfg.server.uploads_dir, &items, &a.media);
+    let items: Vec<_> = if b.files { b.ids.iter().filter_map(|id| a.kb.get(*id)).collect() } else { vec![] };
+    let n = a.kb.delete_many(&b.ids).map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    let r = crate::files::remove_media_files(&a.cfg.server.uploads_dir, &items, &a.kb);
     Ok(Json(json!({ "deleted": n, "files_removed": r.removed, "files_failed": r.failed })))
 }
 
@@ -142,7 +157,7 @@ struct IdsBody {
 /// Avancement de l'analyse des médias, avec ce qu'il faut pour l'écran : combien sont déjà analysés, et le modèle de vision est-il prêt.
 async fn analyze_state(a: &App) -> Value {
     let mut v = serde_json::to_value(a.analyzer.status()).unwrap_or(Value::Null);
-    let (total, analyzed) = a.media.analysis_counts().unwrap_or((0, 0));
+    let (total, analyzed) = a.kb.analysis_counts().unwrap_or((0, 0));
     v["counts"] = json!({ "total": total, "analyzed": analyzed, "todo": total.saturating_sub(analyzed) });
     v["vision"] = json!(crate::analyzer::vision_info(a).await);
     v
@@ -182,7 +197,7 @@ async fn media_import_cancel(State(a): State<App>, h: HeaderMap) -> ApiResult {
 
 async fn media_patch(State(a): State<App>, h: HeaderMap, Path(id): Path<i64>, Json(p): Json<MediaPatch>) -> ApiResult {
     authorize(&a, &h)?;
-    match a.media.patch(id, &p).map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))? {
+    match a.kb.patch(id, &p).map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))? {
         Some(m) => Ok(Json(json!(m))),
         None => Err(err(StatusCode::NOT_FOUND, "média introuvable")),
     }
@@ -199,7 +214,7 @@ async fn media_bulk(State(a): State<App>, h: HeaderMap, Json(b): Json<Bulk>) -> 
     authorize(&a, &h)?;
     let mut n = 0;
     for id in b.ids {
-        if a.media.patch(id, &b.patch).map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?.is_some() {
+        if a.kb.patch(id, &b.patch).map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?.is_some() {
             n += 1;
         }
     }
@@ -208,8 +223,191 @@ async fn media_bulk(State(a): State<App>, h: HeaderMap, Json(b): Json<Bulk>) -> 
 
 async fn media_scan(State(a): State<App>, h: HeaderMap) -> ApiResult {
     authorize(&a, &h)?;
-    let n = a.media.scan_uploads(&a.cfg.server.uploads_dir).map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    let n = a.kb.scan_uploads(&a.cfg.server.uploads_dir).map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?;
     Ok(Json(json!({ "added": n })))
+}
+
+// ---------- Base de connaissances ----------
+
+fn kb_files_dir(a: &AppState) -> std::path::PathBuf {
+    a.cfg.server.data_dir.join(crate::ingest::FILES_DIR)
+}
+
+async fn kb_documents(State(a): State<App>) -> ApiResult {
+    let documents = a.kb.documents().map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    Ok(Json(json!({ "stats": a.kb.stats(), "documents": documents })))
+}
+
+/// Téléverse un document : le corps est le fichier lui-même (`PUT /kb/documents?name=guide.docx`). Facultatifs : `title`, `url`
+/// (adresse d'origine) et `tags` (séparés par des virgules). La réponse dit ce qui a été fait (ajouté, remplacé, inchangé, doublon,
+/// refusé) ; un refus n'est pas une erreur de la requête.
+async fn kb_upload(State(a): State<App>, h: HeaderMap, Query(q): Query<std::collections::HashMap<String, String>>, body: Bytes) -> ApiResult {
+    authorize(&a, &h)?;
+    let name = q.get("name").map(|n| n.trim()).filter(|n| !n.is_empty()).ok_or_else(|| err(StatusCode::BAD_REQUEST, "paramètre « name » manquant (nom du fichier)"))?;
+    let up = crate::ingest::Upload {
+        name: name.to_string(),
+        bytes: body.to_vec(),
+        title: q.get("title").cloned(),
+        url: q.get("url").cloned(),
+        tags: q.get("tags").map(|t| t.split(',').map(|x| x.trim().to_string()).filter(|x| !x.is_empty()).collect()).unwrap_or_default(),
+    };
+    let outcome = crate::ingest::ingest(&a.kb, &kb_files_dir(&a), up).await;
+    Ok(Json(json!(outcome)))
+}
+
+async fn kb_document(State(a): State<App>, Path(id): Path<i64>) -> ApiResult {
+    let doc = a.kb.document(id).ok_or_else(|| err(StatusCode::NOT_FOUND, "document introuvable"))?;
+    let passages = a.kb.passages_of(id).map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    Ok(Json(json!({ "document": doc, "passages": passages })))
+}
+
+async fn kb_document_delete(State(a): State<App>, h: HeaderMap, Path(id): Path<i64>) -> ApiResult {
+    authorize(&a, &h)?;
+    match a.kb.delete_document(id).map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))? {
+        Some(doc) => {
+            if let Some(stored) = doc.stored.as_deref().filter(|s| !a.kb.stored_in_use(s)) {
+                let _ = std::fs::remove_file(kb_files_dir(&a).join(stored));
+            }
+            Ok(Json(json!({ "deleted": id, "passages": doc.passages })))
+        }
+        None => Err(err(StatusCode::NOT_FOUND, "document introuvable")),
+    }
+}
+
+/// Le fichier d'origine d'un document, à télécharger (jamais affiché dans la page : une page HTML importée pourrait contenir des scripts).
+async fn kb_document_file(State(a): State<App>, Path(id): Path<i64>) -> Result<axum::response::Response, (StatusCode, Json<Value>)> {
+    let doc = a.kb.document(id).ok_or_else(|| err(StatusCode::NOT_FOUND, "document introuvable"))?;
+    if doc.secrets {
+        return Err(err(StatusCode::FORBIDDEN, "des mots de passe ont été repérés dans ce document : retirez-les du fichier d'origine puis réimportez-le (son téléchargement est bloqué en attendant)"));
+    }
+    let stored = doc.stored.as_deref().filter(|s| valid_stored_name(s)).ok_or_else(|| err(StatusCode::NOT_FOUND, "le fichier d'origine n'est pas conservé"))?;
+    let bytes = std::fs::read(kb_files_dir(&a).join(stored)).map_err(|_| err(StatusCode::NOT_FOUND, "le fichier d'origine n'est plus là"))?;
+    let format = crate::extract::Format::from_key(&doc.format);
+    let mime = format.map_or("application/octet-stream", |f| f.mime());
+    // nom de téléchargement : le dernier segment du chemin, sans caractère qui casserait l'en-tête
+    let file = doc.name.rsplit('/').next().unwrap_or("document");
+    let safe: String = file.chars().filter(|c| !c.is_control() && !matches!(c, '"' | '\\' | '/')).collect();
+    let encoded: String = safe.bytes().map(|b| if b.is_ascii_alphanumeric() || b"-._~".contains(&b) { (b as char).to_string() } else { format!("%{b:02X}") }).collect();
+    Ok((
+        [
+            (axum::http::header::CONTENT_TYPE, mime.to_string()),
+            (axum::http::header::CONTENT_DISPOSITION, format!("attachment; filename*=UTF-8''{encoded}")),
+            (axum::http::header::X_CONTENT_TYPE_OPTIONS, "nosniff".to_string()),
+        ],
+        bytes,
+    )
+        .into_response())
+}
+
+/// `<empreinte SHA-256>.<format>` : le seul nom de copie que le moteur écrit (rien d'autre ne sort du dossier des copies).
+fn valid_stored_name(s: &str) -> bool {
+    match s.split_once('.') {
+        Some((hash, ext)) => hash.len() == 64 && hash.bytes().all(|b| b.is_ascii_hexdigit()) && matches!(ext, "md" | "html" | "docx" | "pdf" | "txt"),
+        None => false,
+    }
+}
+
+/// Le passage tel qu'on l'affiche : les mots de passe repérés dans son texte sont masqués, comme dans ce que reçoit l'assistant.
+fn masked(mut passage: crate::kb::Source) -> crate::kb::Source {
+    passage.description = crate::secrets::mask(&passage.description).into_owned();
+    passage
+}
+
+/// Un passage, avec son document et les passages voisins : de quoi l'afficher quand on clique sur une source.
+async fn kb_passage(State(a): State<App>, Path(id): Path<i64>) -> ApiResult {
+    let passage = a.kb.get(id).filter(|p| p.is_passage()).map(masked).ok_or_else(|| err(StatusCode::NOT_FOUND, "passage introuvable"))?;
+    let document = passage.doc_id.and_then(|d| a.kb.document(d));
+    let (previous, next) = a.kb.neighbors(id);
+    let brief = |s: Option<crate::kb::Source>| s.map(|s| json!({ "id": s.id, "section": s.section }));
+    Ok(Json(json!({ "passage": passage, "document": document, "previous": brief(previous), "next": brief(next) })))
+}
+
+async fn kb_import_status(State(a): State<App>) -> Json<Value> {
+    Json(json!(a.ingester.status()))
+}
+
+async fn kb_import_start(State(a): State<App>, h: HeaderMap, Json(o): Json<crate::ingest::IngestOptions>) -> ApiResult {
+    authorize(&a, &h)?;
+    a.ingester.start(a.clone(), o).map_err(|e| err(StatusCode::BAD_REQUEST, e))?;
+    Ok(Json(json!(a.ingester.status())))
+}
+
+async fn kb_import_cancel(State(a): State<App>, h: HeaderMap) -> ApiResult {
+    authorize(&a, &h)?;
+    a.ingester.cancel();
+    Ok(Json(json!({ "cancelling": true })))
+}
+
+/// Essai de la recherche : ce que l'assistant recevrait pour cette question, avec le classement et les concepts reconnus.
+async fn kb_search(State(a): State<App>, Query(q): Query<std::collections::HashMap<String, String>>) -> ApiResult {
+    let text = q.get("q").map(|t| t.trim()).filter(|t| !t.is_empty()).ok_or_else(|| err(StatusCode::BAD_REQUEST, "paramètre « q » manquant (la question)"))?;
+    let limit = q.get("limit").and_then(|l| l.parse::<usize>().ok()).unwrap_or(8).clamp(1, 30);
+    let report = a.kb.search(&[(text.chars().take(2000).collect(), 1.0)], &Default::default(), limit);
+    let hits: Vec<Value> = report
+        .hits
+        .iter()
+        .enumerate()
+        .map(|(i, h)| json!({ "source": h.source, "score": (h.score * 100.0).round() / 100.0, "matched": h.matched, "offered": i < crate::ws::MAX_PICKS }))
+        .collect();
+    Ok(Json(json!({ "terms": report.terms, "concepts": report.concepts, "unknown": report.unknown, "hits": hits })))
+}
+
+/// Taille maximale du fichier de synonymes de l'utilisateur.
+const MAX_SYNONYMS_BYTES: usize = 200_000;
+
+/// Le dictionnaire de synonymes : celui de base (lecture seule) et celui de l'utilisateur (modifiable).
+async fn kb_synonyms(State(a): State<App>) -> Json<Value> {
+    let custom = a.kb.synonyms();
+    Json(json!({
+        "builtin": crate::thesaurus::Thesaurus::builtin_text(),
+        "custom": custom.clone().unwrap_or_default(),
+        "editable": custom.is_some(),
+        "concepts": a.kb.concept_count(),
+        "problems": crate::thesaurus::Thesaurus::problems(&custom.unwrap_or_default()),
+    }))
+}
+
+#[derive(Deserialize)]
+struct SynonymsBody {
+    text: String,
+}
+
+async fn kb_synonyms_put(State(a): State<App>, h: HeaderMap, Json(b): Json<SynonymsBody>) -> ApiResult {
+    authorize(&a, &h)?;
+    if b.text.len() > MAX_SYNONYMS_BYTES {
+        return Err(err(StatusCode::PAYLOAD_TOO_LARGE, format!("fichier trop volumineux (plus de {} Ko)", MAX_SYNONYMS_BYTES / 1000)));
+    }
+    a.kb.set_synonyms(&b.text).map_err(|e| err(StatusCode::BAD_REQUEST, e))?;
+    Ok(Json(json!({ "concepts": a.kb.concept_count(), "problems": crate::thesaurus::Thesaurus::problems(&b.text) })))
+}
+
+// ---------- Tickets ----------
+
+/// Enregistre un ticket. Ouvert à tout utilisateur de l'assistant (c'est le but : il ne sait pas répondre, la personne signale son
+/// problème) ; le proxy de l'application laisse passer cette écriture-là sans connexion.
+async fn ticket_create(State(a): State<App>, Json(t): Json<crate::tickets::NewTicket>) -> ApiResult {
+    let ticket = a.tickets.create(&t).map_err(|e| err(StatusCode::BAD_REQUEST, e))?;
+    tracing::info!("ticket {} enregistré : {}", ticket.reference, ticket.title);
+    Ok(Json(json!(ticket)))
+}
+
+/// La liste des tickets : réservée à l'administration (le proxy exige la connexion, même pour une lecture).
+async fn tickets_list(State(a): State<App>, h: HeaderMap) -> ApiResult {
+    authorize(&a, &h)?;
+    Ok(Json(json!(a.tickets.list(500))))
+}
+
+#[derive(Deserialize)]
+struct StatusBody {
+    status: String,
+}
+
+async fn ticket_status(State(a): State<App>, h: HeaderMap, Path(id): Path<i64>, Json(b): Json<StatusBody>) -> ApiResult {
+    authorize(&a, &h)?;
+    match a.tickets.set_status(id, &b.status).map_err(|e| err(StatusCode::BAD_REQUEST, e))? {
+        Some(t) => Ok(Json(json!(t))),
+        None => Err(err(StatusCode::NOT_FOUND, "ticket introuvable")),
+    }
 }
 
 /// Conversations sauvegardées (reprises automatiquement) : clé, profil d'assistant, nombre de messages, date.
@@ -445,7 +643,16 @@ async fn tts_runtime_install(State(a): State<App>, h: HeaderMap) -> ApiResult {
 
 #[cfg(test)]
 mod tests {
-    use super::{detect_audio_ext, origin_allowed, valid_voice_name};
+    use super::{detect_audio_ext, masked, origin_allowed, valid_voice_name};
+    use crate::kb::Source;
+
+    #[test]
+    fn un_passage_affiche_ne_montre_pas_les_mots_de_passe() {
+        let p = Source { kind: "passage".into(), description: "Connexion : mot de passe : Printemps2024! puis valider.".into(), ..Default::default() };
+        let m = masked(p);
+        assert!(!m.description.contains("Printemps2024"), "{}", m.description);
+        assert!(m.description.contains(crate::secrets::MASK) && m.description.contains("puis valider"));
+    }
 
     #[test]
     fn formats_audio_reconnus_par_en_tete() {

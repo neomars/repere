@@ -1,5 +1,5 @@
-//! Directives : le LLM écrit du texte normal avec des directives inline, par exemple `[[show: #42]]` (montrer une des sources
-//! proposées à ce tour) ou `[[replies: Oui | Non]]` (réponses rapides cliquables).
+//! Directives : le LLM écrit du texte normal avec des directives inline, par exemple `[[source: #12]]` (citer un extrait de document
+//! proposé à ce tour), `[[show: #42]]` (montrer une image proposée à ce tour) ou `[[replies: Oui | Non]]` (réponses rapides cliquables).
 //! Ce format est bien plus fiable que le function-calling sur des modèles locaux,
 //! et permet d'agir dès que la directive apparaît dans le flux.
 
@@ -8,8 +8,10 @@ use serde::Serialize;
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Directive {
-    /// Une source précise de la liste proposée à ce tour : `[[show: #42]]`. Le moteur vérifie qu'elle a bien été proposée.
+    /// Une image de la liste proposée à ce tour : `[[show: #42]]`. Le moteur vérifie qu'elle a bien été proposée.
     ShowId { id: i64 },
+    /// Des extraits de document cités : `[[source: #12]]` ou `[[source: #12, #15]]`. Le moteur vérifie qu'ils ont bien été proposés.
+    Source { ids: Vec<i64> },
     /// Des réponses rapides : `[[replies: Oui | Non]]`.
     Replies { items: Vec<String> },
 }
@@ -174,11 +176,27 @@ fn parse_media_id(s: &str) -> Option<i64> {
     rest.trim().split(|c: char| !c.is_ascii_digit()).next()?.parse::<i64>().ok().filter(|id| *id > 0)
 }
 
+/// « #12 », « #12, #15 », « #12 | #15 », « 12 » : les numéros de sources d'une directive `source` (quatre au plus). Si un morceau n'est pas
+/// un numéro (« source: Guide VPN 2 »), ce n'est pas une citation : rien n'est cité plutôt qu'un numéro lu au hasard.
+fn parse_source_ids(s: &str) -> Option<Vec<i64>> {
+    let mut ids: Vec<i64> = vec![];
+    for token in s.replace("# ", "#").split([',', ';', '|', ' ', '\n']).map(str::trim).filter(|t| !t.is_empty()) {
+        let digits = token.strip_prefix('#').or_else(|| token.strip_prefix("id=")).unwrap_or(token).trim();
+        let id = digits.parse::<i64>().ok().filter(|id| *id > 0)?;
+        if !ids.contains(&id) {
+            ids.push(id);
+        }
+    }
+    ids.truncate(4);
+    (!ids.is_empty()).then_some(ids)
+}
+
 /// Une directive reconnue. Tout le reste (nom inconnu, ancienne syntaxe `[[show: tag1, tag2]]`…) est ignoré : ni affiché ni lu.
 pub fn parse_directive(body: &str) -> Option<Directive> {
     let (name, rest) = body.split_once(':')?;
     match name.trim().to_lowercase().as_str() {
         "show" => parse_media_id(rest.split('|').next().unwrap_or("")).map(|id| Directive::ShowId { id }),
+        "source" | "sources" => parse_source_ids(rest).map(|ids| Directive::Source { ids }),
         "replies" => {
             let items = split_replies(rest);
             if items.is_empty() { None } else { Some(Directive::Replies { items }) }
@@ -421,6 +439,26 @@ mod tests {
         let r = all(&["Voir la fiche. [[show: ", "#42]] Là."]);
         assert!(r.contains(&Piece::Directive(Directive::ShowId { id: 42 })));
         assert_eq!(text(&r), "Voir la fiche.  Là.");
+    }
+
+    #[test]
+    fn directive_de_citation_d_extraits() {
+        let one = |ids: &[i64]| Some(Directive::Source { ids: ids.to_vec() });
+        assert_eq!(parse_directive("source: #12"), one(&[12]));
+        assert_eq!(parse_directive("SOURCE:# 7 "), one(&[7]));
+        assert_eq!(parse_directive("source: #12, #15"), one(&[12, 15]));
+        assert_eq!(parse_directive("source: #12 | #15 ; #12"), one(&[12, 15]), "sans doublon");
+        assert_eq!(parse_directive("sources: 3 4"), one(&[3, 4]));
+        assert_eq!(parse_directive("source: id=9"), one(&[9]));
+        assert_eq!(parse_directive("source: #1, #2, #3, #4, #5, #6"), one(&[1, 2, 3, 4]), "quatre au plus");
+        // un morceau qui n'est pas un numéro : ce n'est pas une citation, rien n'est lu au hasard
+        for body in ["source: Guide VPN 2", "source: #vpn", "source: #0", "source:", "source: #12, guide", "source: https://intranet.exemple.fr/vpn"] {
+            assert_eq!(parse_directive(body), None, "{body}");
+        }
+        // dans le flux, découpée en jetons, et invisible
+        let r = all(&["Autorisez les ports UDP 500 et 4500. [[sour", "ce: #1", "2]] Relancez le client."]);
+        assert_eq!(text(&r), "Autorisez les ports UDP 500 et 4500.  Relancez le client.");
+        assert!(r.contains(&Piece::Directive(Directive::Source { ids: vec![12] })));
     }
 
     #[test]

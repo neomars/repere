@@ -4,7 +4,7 @@
 //! tirés des noms de dossiers. Les vidéos que le navigateur ne lit pas (AVI) sont converties en MP4 par ffmpeg. Le travail
 //! tourne en tâche de fond : l'interface suit l'avancement et peut l'annuler.
 
-use crate::media::MediaItem;
+use crate::kb::Source;
 use crate::state::AppState;
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
@@ -473,7 +473,7 @@ async fn run(app: Arc<AppState>, root: PathBuf, opts: ImportOptions, status: Arc
                 }
                 let label = f.path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
                 status.lock().unwrap().current = if f.convert { format!("{label} (conversion en MP4…)") } else { label.clone() };
-                let res = import_one(&app.media, &f, &opts, &base_tags, ffmpeg.as_deref(), &videos_dir, &photos_dir, &thumbs_dir, &conversions, &cancel).await;
+                let res = import_one(&app.kb, &f, &opts, &base_tags, ffmpeg.as_deref(), &videos_dir, &photos_dir, &thumbs_dir, &conversions, &cancel).await;
                 let mut st = status.lock().unwrap();
                 st.done += 1;
                 match res {
@@ -503,7 +503,7 @@ async fn run(app: Arc<AppState>, root: PathBuf, opts: ImportOptions, status: Arc
 
 #[allow(clippy::too_many_arguments)]
 async fn import_one(
-    media: &crate::media::MediaLibrary,
+    media: &crate::kb::KnowledgeBase,
     f: &Found,
     opts: &ImportOptions,
     base_tags: &[String],
@@ -555,7 +555,7 @@ async fn import_one(
             }
         }
     }
-    let item = MediaItem {
+    let item = Source {
         id: 0,
         kind: if f.kind == Kind::Video { "video" } else { "photo" }.into(),
         url: format!("/{url_dir}/{final_name}"),
@@ -671,7 +671,7 @@ mod tests {
         std::fs::write(src.join("b/Mon Film.mp4"), vec![2u8; 6000]).unwrap(); // même nom, autre contenu
         std::fs::write(src.join("b/copie.mp4"), vec![1u8; 5000]).unwrap(); // même contenu que le premier
         std::fs::write(src.join("b/photo.JPG"), vec![3u8; 100]).unwrap();
-        let lib = crate::media::MediaLibrary::open_in_memory().unwrap();
+        let lib = crate::kb::KnowledgeBase::open_in_memory().unwrap();
         let opts = ImportOptions { tags: vec!["Été".into()], ..Default::default() };
         let base = opts.tags.clone();
         let run_one = |p: PathBuf, kind: Kind, dirs: &[&str]| {
@@ -719,17 +719,17 @@ mod tests {
     }
 
     /// Un lot d'import prêt : dossier source, dossiers servis, médiathèque.
-    fn atelier(name: &str) -> (PathBuf, PathBuf, PathBuf, crate::media::MediaLibrary) {
+    fn atelier(name: &str) -> (PathBuf, PathBuf, PathBuf, crate::kb::KnowledgeBase) {
         let d = tmp(name);
         let (src, up) = (d.join("src"), d.join("uploads"));
         for sub in ["videos", "photos", "thumbnails"] {
             std::fs::create_dir_all(up.join(sub)).unwrap();
         }
         std::fs::create_dir_all(&src).unwrap();
-        (d, src, up, crate::media::MediaLibrary::open_in_memory().unwrap())
+        (d, src, up, crate::kb::KnowledgeBase::open_in_memory().unwrap())
     }
 
-    async fn importer_un(lib: &crate::media::MediaLibrary, up: &Path, f: &Found, ff: Option<&Path>, cancel: &AtomicBool) -> Result<Outcome, String> {
+    async fn importer_un(lib: &crate::kb::KnowledgeBase, up: &Path, f: &Found, ff: Option<&Path>, cancel: &AtomicBool) -> Result<Outcome, String> {
         let sem = tokio::sync::Semaphore::new(1);
         import_one(lib, f, &ImportOptions::default(), &[], ff, &up.join("videos"), &up.join("photos"), &up.join("thumbnails"), &sem, cancel).await
     }

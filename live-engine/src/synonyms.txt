@@ -76,7 +76,7 @@ certificat, certificate, ssl, tls, https, autorité de certification ~ navigateu
 
 # ── Fichiers et données ──
 fichier, dossier, répertoire, folder ~ partage, stockage
-partage de fichiers, dossier partagé, lecteur réseau, partage réseau, sharepoint, onedrive, nas, smb ~ fichier, droits d'accès
+partage de fichiers, dossier partagé, lecteur réseau, partage réseau, sharepoint, onedrive, smb ~ nas, fichier, droits d'accès
 droits d'accès, permissions, autorisation, accès refusé, access denied, acl ~ fichier, compte
 disque, disque dur, ssd, hdd, espace disque, disque plein, stockage, quota ~ fichier, sauvegarde
 sauvegarde, sauvegarder, backup, restauration, restaurer, restore, copie de sécurité ~ fichier, disque
@@ -86,6 +86,7 @@ pdf, acrobat, adobe reader, lecteur pdf ~ fichier, imprimante
 virus, malware, logiciel malveillant, antivirus, ransomware, rançongiciel, cheval de troie, trojan, spyware ~ sécurité, hameçonnage
 hameçonnage, phishing, mail frauduleux, courriel frauduleux, spam, pourriel, arnaque ~ messagerie, sécurité
 sécurité, sécurité informatique, cybersécurité, rssi ~ virus, mot de passe
+vol, voler, volé, volée, volés, dérobé, disparition ~ perte, sécurité, ordinateur, téléphone
 erreur, message d'erreur, code d'erreur, error, échec, failure ~ capture d'écran, journal
 capture d'écran, screenshot, copie d'écran ~ erreur
 ticket, incident, glpi, helpdesk, help desk, service desk, hotline, support informatique, assistance informatique ~ demande, suivi

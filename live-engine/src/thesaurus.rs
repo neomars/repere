@@ -7,9 +7,8 @@
 //! `synonyms.txt`, dans le dossier de données, au même format (voir l'en-tête du fichier). Les mots sont réduits à leur racine
 //! comme partout ailleurs (`terms.rs`) : accents, majuscules, pluriels et conjugaisons courantes ne comptent pas.
 //!
-//! État : le dictionnaire est chargé et relu quand le fichier de l'utilisateur change, mais la recherche (`MediaLibrary::relevant`)
-//! ne le consulte pas encore. Il servira à élargir la requête avec les mots de même sens ; en attendant, `triggers`, `doc_concepts`
-//! et `name` n'ont pas d'appelant (d'où les `allow(dead_code)`), et leurs tests tiennent le mécanisme.
+//! Ces concepts servent à la recherche (`search.rs`) : la question évoque des concepts, et chaque texte de la base est indexé avec
+//! ceux qu'il contient.
 
 use crate::terms::{norm_tag, terms};
 use std::collections::HashMap;
@@ -96,22 +95,54 @@ impl Thesaurus {
         Self::with_extra("")
     }
 
-    #[cfg(test)]
+    /// Nombre de concepts.
     pub fn len(&self) -> usize {
         self.concepts.len()
     }
 
-    #[allow(dead_code)] // phase 2 : appelé par `relevant()` (voir l'en-tête du module)
+    /// Le texte du dictionnaire de base, tel qu'il est livré (l'écran d'administration l'affiche en lecture seule).
+    pub fn builtin_text() -> &'static str {
+        BUILTIN
+    }
+
+    /// Ce qui ne va pas dans un fichier de synonymes, ligne par ligne, pour que la personne qui l'écrit le corrige. Une remarque par
+    /// ligne en cause ; un fichier sans remarque est sans reproche (ce qui ne dit pas qu'il est utile).
+    pub fn problems(text: &str) -> Vec<String> {
+        let mut out = vec![];
+        for (i, raw) in text.lines().enumerate() {
+            let line = raw.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            let n = i + 1;
+            let Some((_, strong, weak)) = parse_line(line) else {
+                out.push(format!("ligne {n} : aucun mot avant le « ~ » ; la ligne est ignorée"));
+                continue;
+            };
+            for (m, is_strong) in strong.iter().map(|m| (m, true)).chain(weak.iter().map(|m| (m, false))) {
+                let stems = terms(m);
+                if stems.is_empty() {
+                    out.push(format!("ligne {n} : « {m} » ne contient aucun mot utile (mot vide ou trop court) ; il est ignoré"));
+                } else if is_strong && stems.len() == 1 && crate::terms::is_generic(&stems[0]) {
+                    // un mot lié (après le « ~ ») ne déclenche rien : il peut être courant
+                    out.push(format!("ligne {n} : « {m} » est un mot très courant de la langue ; il rapprocherait des textes sans rapport"));
+                }
+            }
+            if strong.len() == 1 && !line.contains('~') && !text.lines().take(i).any(|l| parse_line(l).is_some_and(|(name, _, _)| norm_tag(&name) == norm_tag(&strong[0]))) {
+                out.push(format!("ligne {n} : « {} » est seul sur sa ligne ; ajoutez des mots de même sens (séparés par des virgules), ou le nom d'un concept existant pour compléter celui-ci", strong[0]));
+            }
+        }
+        out
+    }
+
     pub fn name(&self, concept: u32) -> &str {
         &self.concepts[concept as usize].name
     }
 
-    /// Les concepts qu'évoque un texte (racines dans l'ordre, voir `terms`), et pour chaque racine si elle a été « consommée » par
-    /// un concept : « réseau sans fil » évoque le Wi-Fi, pas aussi le réseau. Une expression l'emporte sur ses mots isolés.
-    #[allow(dead_code)] // phase 2 : appelé par `relevant()` (voir l'en-tête du module)
-    pub fn triggers(&self, stems: &[String]) -> (Vec<u32>, Vec<bool>) {
-        let mut out: Vec<u32> = vec![];
-        let mut consumed = vec![false; stems.len()];
+    /// Les concepts qu'évoque un texte, avec les mots qui les évoquent : (concept, rang de la première racine, nombre de racines).
+    /// Une expression l'emporte sur ses mots isolés (« réseau sans fil » évoque le Wi-Fi, pas aussi le réseau).
+    pub fn spans(&self, stems: &[String]) -> Vec<(u32, usize, usize)> {
+        let mut out: Vec<(u32, usize, usize)> = vec![];
         let mut i = 0;
         while i < stems.len() {
             // la plus longue expression qui commence ici
@@ -127,25 +158,35 @@ impl Thesaurus {
                 }
             }
             if len > 0 {
-                out.extend(longest);
-                consumed[i..i + len].iter_mut().for_each(|c| *c = true);
+                out.extend(longest.into_iter().map(|c| (c, i, len)));
                 i += len;
                 continue;
             }
             if let Some(cs) = self.single_strong.get(&stems[i]) {
-                out.extend(cs.iter().copied());
-                consumed[i] = true;
+                out.extend(cs.iter().map(|c| (*c, i, 1)));
             }
             i += 1;
         }
-        let mut seen = std::collections::HashSet::new();
-        out.retain(|c| seen.insert(*c));
+        out
+    }
+
+    /// Les concepts qu'évoque un texte (racines dans l'ordre, voir `terms`), et pour chaque racine si elle a été « consommée » par
+    /// un concept : « réseau sans fil » évoque le Wi-Fi, pas aussi le réseau. Une expression l'emporte sur ses mots isolés.
+    #[cfg(test)]
+    pub fn triggers(&self, stems: &[String]) -> (Vec<u32>, Vec<bool>) {
+        let mut consumed = vec![false; stems.len()];
+        let mut out: Vec<u32> = vec![];
+        for (c, start, len) in self.spans(stems) {
+            consumed[start..start + len].iter_mut().for_each(|x| *x = true);
+            if !out.contains(&c) {
+                out.push(c);
+            }
+        }
         (out, consumed)
     }
 
     /// Ce qu'un texte de la base évoque : pour chaque concept, la force du meilleur mot de même sens et celle du meilleur mot lié (0
     /// s'il n'y en a pas). Un mot pèse selon l'endroit où il figure : `fields` = (poids, suites de racines) — tags, titre, description…
-    #[allow(dead_code)] // phase 2 : appelé par `relevant()` (voir l'en-tête du module)
     pub fn doc_concepts(&self, fields: &[(f32, &[Vec<String>])]) -> HashMap<u32, (f32, f32)> {
         let mut out: HashMap<u32, (f32, f32)> = HashMap::new();
         for (weight, seqs) in fields {
@@ -198,6 +239,25 @@ mod tests {
             assert!(c.strong.iter().all(|m| !m.is_empty()), "{}", c.name);
             assert!(names(&th, &c.name).contains(&c.name), "« {} » ne se déclenche pas lui-même", c.name);
         }
+    }
+
+    #[test]
+    fn le_dictionnaire_de_base_ne_merite_aucun_reproche() {
+        assert_eq!(Thesaurus::problems(BUILTIN), Vec::<String>::new());
+    }
+
+    #[test]
+    fn les_lignes_douteuses_d_un_fichier_sont_signalees() {
+        assert!(Thesaurus::problems("# commentaire\n\nglpi, ticket, incident ~ demande\nmot de passe, sésame\n").is_empty());
+        let p = Thesaurus::problems("~ juste des liens\nle, la\nproblème, souci, pb\nseul\n");
+        let on = |ligne: usize, morceau: &str| p.iter().any(|r| r.starts_with(&format!("ligne {ligne} :")) && r.contains(morceau));
+        assert!(on(1, "aucun mot avant"), "{p:?}");
+        assert!(on(2, "« le »") && on(2, "« la »") && on(2, "aucun mot utile"), "{p:?}");
+        assert!(on(3, "« problème » est un mot très courant") && on(3, "« souci » est un mot très courant") && on(3, "« pb » ne contient aucun mot utile"), "{p:?}");
+        assert!(on(4, "seul sur sa ligne"), "{p:?}");
+        // un mot seul qui complète un concept existant n'est pas un reproche
+        assert!(Thesaurus::problems("imprimante, photocopieur\nimprimante, copieuse\n").is_empty());
+        assert_eq!(Thesaurus::with_extra("glpi, ticket glpi\n").len(), Thesaurus::builtin().len() + 1);
     }
 
     #[test]
